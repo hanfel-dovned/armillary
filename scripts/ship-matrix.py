@@ -17,7 +17,9 @@ key "stub-key", fake-stripe.py on 127.0.0.1:3400 and fake-btcpay.py on
 127.0.0.1:3401, both with the secret "whsec_gate" and HOST as their ship
 url: this script starts none of them. Exits 1 on any failure. Safe to
 rerun: it sweeps the account, the provider and the plans it made, both
-before it starts and after it finishes."""
+before it starts and after it finishes. PROVIDER_PORT, STRIPE_PORT,
+BTCPAY_PORT and BRAVE_PORT in the environment move the stubs off 3399,
+3400, 3401 and 3402, for a second set of ships beside the first."""
 import json, os, subprocess, sys, time
 
 HOST, JAR = sys.argv[1], sys.argv[2]
@@ -26,11 +28,11 @@ PEER = sys.argv[3] if TWO else HOST
 PJAR = sys.argv[4] if TWO else JAR
 VENDOR_DOWN = os.environ.get('VENDOR_DOWN', '')
 VENDOR_UP = os.environ.get('VENDOR_UP', '')
-PORT = '3399'
+PORT = os.environ.get('PROVIDER_PORT', '3399')
 STUB = 'http://127.0.0.1:' + PORT
-SPORT = '3400'
+SPORT = os.environ.get('STRIPE_PORT', '3400')
 SSTUB = 'http://127.0.0.1:' + SPORT
-BPORT = '3401'
+BPORT = os.environ.get('BTCPAY_PORT', '3401')
 BSTUB = 'http://127.0.0.1:' + BPORT
 WHSEC = 'whsec_gate'
 STRIPE_KEY = 'sk_test_gate'
