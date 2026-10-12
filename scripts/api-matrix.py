@@ -154,7 +154,7 @@ def page(url):
 
 def raw(path):
     """a grub's text straight out of the ball browser"""
-    return subprocess.run(['curl', '-s', '-m', '30', '-b', JAR, INSTANCE + path + '?raw=1'],
+    return subprocess.run(['curl', '-sL', '-m', '30', '-b', JAR, INSTANCE + path + '?raw=1'],
                           capture_output=True, text=True).stdout
 
 
@@ -679,7 +679,7 @@ for op in ('set-provider', 'set-catalog', 'set-plan', 'drop-plan',
 check('the ring never carries a secret', 'stub-key' not in text and 'prov-key' not in text and
       STRIPE_KEY not in text and WHSEC not in text and BTC_KEY not in text
       and (SEC1 or 'x') not in text, text[:300])
-out = subprocess.run(['curl', '-s', '-m', '30', '-b', JAR, INSTANCE + '/tr/last?raw=1'],
+out = subprocess.run(['curl', '-sL', '-m', '30', '-b', JAR, INSTANCE + '/tr/last?raw=1'],
                      capture_output=True, text=True).stdout
 check('tr/last reads ok after the last op', '"ok"' in out and 'stub-key' not in out, out[:200])
 
@@ -712,7 +712,7 @@ check('a card checkout opens a session on the stub', code == 200 and SID.startsw
 code, acct = curl('GET', API + '/accounts/' + SELF)
 CUS = dictish(dictish(acct).get('account')).get('stripe_customer', '')
 check('the account holds a Stripe customer', CUS.startswith('cus_'), dictish(acct).get('account'))
-groups = subprocess.run(['curl', '-s', '-m', '30', '-b', JAR, HOST + '/grubbery/ball' + GROUP + '?raw=1'],
+groups = subprocess.run(['curl', '-sL', '-m', '30', '-b', JAR, HOST + '/grubbery/ball' + GROUP + '?raw=1'],
                         capture_output=True, text=True).stdout
 check('the ship has its usergroup', SELF in groups, groups[:120])
 curl('POST', SSTUB + '/stub/broken/on', jar=None)
@@ -746,7 +746,7 @@ check('the stub saw the customer deleted',
       dictish(dictish(st.get('customers')).get(CUS)).get('deleted') is True, st.get('customers'))
 refunds = [r for r in dictish(st.get('refunds')).values() if r.get('payment_intent') == PI]
 check('the paid session was refunded', len(refunds) == 1, st.get('refunds'))
-groups = subprocess.run(['curl', '-s', '-m', '30', '-b', JAR, HOST + '/grubbery/ball' + GROUP + '?raw=1'],
+groups = subprocess.run(['curl', '-sL', '-m', '30', '-b', JAR, HOST + '/grubbery/ball' + GROUP + '?raw=1'],
                         capture_output=True, text=True).stdout
 check('the usergroup is gone', SELF not in groups, groups[:120])
 ix = raw('/key-index.json')
