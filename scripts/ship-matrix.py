@@ -98,12 +98,12 @@ def instance(host):
 
 def raw(host, jar, path):
     """a grub's text straight out of the ball browser"""
-    return subprocess.run(['curl', '-s', '-m', '30', '-b', jar, instance(host) + path + '?raw=1'],
+    return subprocess.run(['curl', '-sL', '-m', '30', '-b', jar, instance(host) + path + '?raw=1'],
                           capture_output=True, text=True).stdout
 
 
 def ball(host, jar, path):
-    return subprocess.run(['curl', '-s', '-m', '30', '-b', jar,
+    return subprocess.run(['curl', '-sL', '-m', '30', '-b', jar,
                            host + '/grubbery/ball' + path + '?raw=1'],
                           capture_output=True, text=True).stdout
 
@@ -191,7 +191,7 @@ def refs_of(host, jar, ship):
 
 def listing(host, jar, path):
     """a ball directory's listing, as the explorer prints it"""
-    return subprocess.run(['curl', '-s', '-m', '30', '-b', jar,
+    return subprocess.run(['curl', '-sL', '-m', '30', '-b', jar,
                            host + '/grubbery/ball' + path + '?info=1'],
                           capture_output=True, text=True).stdout
 
