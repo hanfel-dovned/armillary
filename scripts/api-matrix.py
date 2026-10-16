@@ -392,6 +392,21 @@ code, seen = curl('GET', STUB + '/stub/requests', jar=None)
 last = dictish(dictish(seen).get('last'))
 check('the upstream saw the swapped model and no stream',
       last.get('model') == 'stub/alpha' and 'stream' not in last, last)
+check('and was asked for the call\'s cost', dictish(last.get('usage')).get('include') is True, last)
+stale = [dict(r, **({'in': 1, 'out': 1} if r['id'] == 'stub/alpha' else {})) for r in cat]
+code, d = curl('PUT', API + '/catalog', stale)
+check('a stale catalog price is set for the next check', code == 200, (code, d))
+settle()
+before = len(ledger())
+code, d = curl('POST', V1 + '/chat/completions',
+               {'model': 'stub/alpha', 'messages': message('hello there world')}, jar=None, bearer=SEC1)
+settle(2)
+rows = ledger()
+check('a chat is charged at the cost OpenRouter reports, not a stale catalog price',
+      code == 200 and len(rows) == before + 1 and rows[0].get('amount') == want and rows[0].get('cost') == 30 + 75,
+      (code, rows[:1]))
+curl('PUT', API + '/catalog', cat)
+settle()
 
 print('embeddings')
 code, d = curl('POST', V1 + '/embeddings', {'model': 'stub/alpha', 'input': 'hello'},
@@ -468,6 +483,40 @@ for row in cat:
     if row['id'] == 'stub/whisper':
         row['enabled'] = False
 curl('PUT', API + '/catalog', cat)
+settle()
+
+print('Brave search, charged')
+BRAVE = 'http://127.0.0.1:' + os.environ.get('BRAVE_PORT', '3402')
+BPROXY = HOST + '/apps/armillary/brave'
+code, d = curl('PUT', API + '/brave', {'key': 'brave-gate-key', 'url': BRAVE})
+check('the vendor sets its Brave key', code == 200, (code, d))
+settle()
+code, d = curl('GET', API + '/brave')
+check('a search costs Brave\'s list price until the vendor sets one', dictish(d).get('cost') == 5000 and 'key' not in dictish(d), d)
+before = len(ledger())
+code, d = curl('GET', BPROXY + '/res/v1/web/search?q=hello%20world&count=3', jar=None, bearer=SEC1)
+check('a web search reaches Brave with the vendor key', code == 200 and dictish(d).get('token') == 'brave-gate-key'
+      and dictish(dictish(d).get('query')).get('q') == 'hello world', (code, d))
+code, d = curl('GET', BPROXY + '/res/v1/local/place_search?q=Diner&latitude=40.1&longitude=-74.2', jar=None, bearer=SEC1)
+check('a place search passes too', code == 200 and dictish(d).get('path') == '/res/v1/local/place_search', (code, d))
+settle(2)
+rows = ledger()
+brave = [r for r in rows[:2] if str(r.get('model', '')).startswith('brave/')]
+check('each search is charged at its cost times the markup',
+      len(rows) == before + 2 and sorted(r.get('model') for r in brave) == ['brave/place', 'brave/search']
+      and all(r.get('amount') == 6500 and r.get('cost') == 5000 for r in brave), rows[:2])
+code, d = curl('PUT', API + '/brave', {'cost': 3000})
+settle()
+code, d = curl('GET', API + '/brave')
+check('the vendor sets its own cost and keeps its key', dictish(d).get('cost') == 3000 and dictish(d).get('key_set') is True, d)
+code, d = curl('GET', BPROXY + '/res/v1/web/search?q=x', jar=None, bearer=SEC1)
+settle(2)
+check('and the next search is charged at it', code == 200 and dictish(ledger()[0]).get('amount') == 3900, ledger()[:1])
+code, d = curl('GET', BPROXY + '/res/v1/news/search?q=x', jar=None, bearer=SEC1)
+check('any other Brave path is 404', code == 404, (code, d))
+code, d = curl('GET', BPROXY + '/res/v1/web/search?q=x')
+check('the owner searches free and uncounted', code == 200 and len(ledger()) == before + 3, (code, len(ledger())))
+curl('PUT', API + '/brave', {'key': None, 'cost': 5000})
 settle()
 
 print('revocation and close')

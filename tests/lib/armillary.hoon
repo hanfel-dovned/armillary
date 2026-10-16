@@ -1083,6 +1083,16 @@
     :-  !>('https://b/res/v1/web/search')
     !>((brave-url:arm 'https://b' ~['res' 'v1' 'web' 'search'] ~))
   ==
+::  a search costs the vendor Brave's list price until it sets its own,
+::  and a cost set to nothing makes searches free
+::
+++  test-brave-cost
+  ;:  weld
+    (expect-eq !>(`@ud`5.000) !>((brave-cost:arm (jo '{"key":"k"}'))))
+    (expect-eq !>(`@ud`3.000) !>((brave-cost:arm (jo '{"key":"k","cost":3000}'))))
+    (expect-eq !>(`@ud`0) !>((brave-cost:arm (jo '{"cost":0}'))))
+    (expect-eq !>(`@ud`5.000) !>((brave-cost:arm ~)))
+  ==
 ::  ==  ZDR tags from OpenRouter's list
 ::
 ::  the import tags zdr exactly the rows whose upstream model has a ZDR

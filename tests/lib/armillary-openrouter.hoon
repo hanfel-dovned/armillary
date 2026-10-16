@@ -194,4 +194,12 @@
     (expect-eq !>(`(unit [cost=@ud in=@ud out=@ud])``[2.000 0 0]) !>((read-stt-usage:ao '{"usage":{"cost":0.002}}')))
     (expect-eq !>(`(unit [cost=@ud in=@ud out=@ud])`~) !>((read-stt-usage:ao 'not json')))
   ==
+::  what a chat cost as OpenRouter reports it under usage, or nothing
+::
+++  test-read-cost
+  ;:  weld
+    (expect-eq !>(`(unit @ud)``105) !>((read-cost:ao '{"usage":{"prompt_tokens":10,"completion_tokens":5,"cost":0.000105}}')))
+    (expect-eq !>(`(unit @ud)`~) !>((read-cost:ao '{"usage":{"prompt_tokens":10}}')))
+    (expect-eq !>(`(unit @ud)`~) !>((read-cost:ao '')))
+  ==
 --

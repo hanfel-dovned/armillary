@@ -1553,9 +1553,11 @@
     ?.  ?=([%s *] kj)  (gs:arm old 'key')
     ?:(=('' p.kj) (gs:arm old 'key') p.kj)
   =/  url=@t  ?:((has-key:arm doc 'url') (gs:arm doc 'url') (gs:arm old 'url'))
+  ::  what one search costs the vendor, in microdollars; kept unless set
+  =/  cost=@ud  ?:((has-key:arm doc 'cost') (gn:arm doc 'cost') (brave-cost:arm old))
   ;<  ~  bind:m
     %+  over:io  (rf 0 / %'brave.json')
-    [[/ %json] (pairs:enjs:format ~[['key' s+key] ['url' s+url]])]
+    [[/ %json] (pairs:enjs:format ~[['key' s+key] ['url' s+url] ['cost' (en-num:arm cost)]])]
   ::  a key set or removed changes what every customer may search with
   ;<  ~  bind:m
     =/  n  (fiber:fiber:nexus ,~)
@@ -2371,6 +2373,10 @@
   ;<  lj=json  bind:m  (read-json (rf up (acct-dir who) %'lease.json'))
   =/  held=(unit lease:arm)  (de-lease:arm lj)
   ?~  held  (pure:m [& 'no lease'])
+  ::  what the key spent since the last tick is charged before it goes,
+  ::  or the delete would forget it; a reconcile that fails does not
+  ::  stop the delete
+  ;<  *  bind:m  (reconcile up who)
   ;<  s=settings:arm  bind:m  (settings-of up)
   =/  pid=@t  ?:(=('' provider.u.held) lease-provider.s provider.u.held)
   ;<  road=(unit [base=@t key=@t])  bind:m  (lease-road up pid)
@@ -4157,8 +4163,11 @@
   =?  doc  !?=([%o *] (gj:arm doc 'tiers'))  (en-suggestion:arm (gn:arm doc 'rev') [~ ~])
   (send-json eyre-id 200 doc)
 ::  +serve-brave: a customer's Brave search on the vendor's key. Only
-::  the two searches the apps make pass; each is counted on the account
-::  that made it. The owner may search too, uncounted.
+::  the two searches the apps make pass. A customer needs credit, and
+::  each search Brave answers is charged at the vendor's cost for it
+::  (brave.json's cost, Brave's list price unless set) times the
+::  markup, and counted on the account. The owner may search too,
+::  uncounted and free.
 ::
 ++  serve-brave
   |=  [eyre-id=@ta act=actor p=(list @t) args=quay:eyre]
@@ -4169,15 +4178,38 @@
   ;<  bj=json  bind:m  (read-json (rf 1 / %'brave.json'))
   =/  key=@t  (gs:arm bj 'key')
   ?:  =('' key)  (send-err eyre-id 503 'brave: the vendor has no Brave key')
+  ;<  a=(unit account:arm)  bind:m
+    ?:  owner.act  (pure:(fiber:fiber:nexus ,(unit account:arm)) ~)
+    (live-account-at 1 ship.act)
+  ?:  &(!owner.act ?=(~ a))  (send-err eyre-id 403 'forbidden')
+  ?:  &(?=(^ a) |(!(syn:si balance.u.a) =(--0 balance.u.a)))
+    (send-err eyre-id 402 'balance: empty')
   =/  api=@t  =/(u=@t (gs:arm bj 'url') ?:(=('' u) 'https://api.search.brave.com' u))
   =/  url=@t  (brave-url:arm api p (turn args |=([k=@t v=@t] [k v])))
   ;<  res=[status=@ud body=@t]  bind:m
     (fetch [%'GET' url ~[['x-subscription-token' key] ['accept' 'application/json']] ~])
-  ;<  ~  bind:m
-    ?:  owner.act  (pure:(fiber:fiber:nexus ,~) ~)
-    %+  poke-writer  1
-    (pairs:enjs:format ~[['op' s+'count-search'] ['ship' s+(scot %p ship.act)]])
   ?:  =(0 status.res)  (send-err eyre-id 502 'brave: no answer')
+  ;<  ~  bind:m
+    =/  n  (fiber:fiber:nexus ,~)
+    ?:  owner.act  (pure:n ~)
+    ;<  ~  bind:n
+      (poke-writer 1 (pairs:enjs:format ~[['op' s+'count-search'] ['ship' s+(scot %p ship.act)]]))
+    ::  a search Brave refused costs the vendor nothing
+    ?.  &((gte status.res 200) (lth status.res 300))  (pure:n ~)
+    ;<  s=settings:arm  bind:n  (settings-of 1)
+    =/  cost=@ud  (brave-cost:arm bj)
+    %+  poke-writer  1
+    %-  pairs:enjs:format
+    :~  ['op' s+'debit']
+        ['ship' s+(scot %p ship.act)]
+        ['amount' (numb:enjs:format (debit-for:aopen cost 0 markup.s))]
+        ['cost' (numb:enjs:format cost)]
+        ['model' s+?:(=(~['res' 'v1' 'local' 'place_search'] p) 'brave/place' 'brave/search')]
+        ['in' (numb:enjs:format 0)]
+        ['out' (numb:enjs:format 0)]
+        ['mode' s+'proxy']
+        ['ref' s+'']
+    ==
   (send-raw eyre-id status.res body.res)
 ::  +serve-brave-settings: the Brave settings without the key, and the
 ::  searches each account made, by month
@@ -4192,6 +4224,7 @@
   %-  pairs:enjs:format
   :~  ['key_set' b+!=('' (gs:arm bj 'key'))]
       ['url' s+(gs:arm bj 'url')]
+      ['cost' (en-num:arm (brave-cost:arm bj))]
       ['searches' ?:(?=([%o *] sj) sj [%o ~])]
   ==
 ::  +serve-poke-ok: one op to the writer, answered ok at once
@@ -4897,6 +4930,13 @@
   ?:  (is-stream:arm jon)
     (send-err eyre-id 400 'stream: not supported on the proxy; take a lease')
   =/  body=json  (swap-model:arm jon upstream.u.row)
+  ::  OpenRouter says what a chat cost when asked, which the charge then
+  ::  follows: token prices miss cache writes, reasoning and a price
+  ::  that moved since the import
+  =?  body  &(?=(%chat kind) ?=(%openrouter kind.u.p) ?=([%o *] body))
+    =/  u=json  (fall (~(get by p.body) 'usage') ~)
+    =/  um=(map @t json)  ?:(?=([%o *] u) p.u ~)
+    [%o (~(put by p.body) 'usage' [%o (~(put by um) 'include' b+&)])]
   =/  leaf=@t
     ?-  kind
       %chat           '/chat/completions'
@@ -4928,15 +4968,20 @@
   =/  out-charge=@ud  ?:(?=(%chat kind) (charge:arm out.toks out.u.row) 0)
   =/  in-cost=@ud   (charge:arm in.toks cost-in.u.row)
   =/  out-cost=@ud  ?:(?=(%chat kind) (charge:arm out.toks cost-out.u.row) 0)
-  ::  a transcription: what OpenRouter says it cost, at the markup, the
-  ::  way a lease's spending is charged
+  ::  what OpenRouter says the call cost, at the markup, the way a
+  ::  lease's spending is charged; token prices only when it said
+  ::  nothing
   ;<  s=settings:arm  bind:m  (settings-of 1)
   =/  spoke=(unit [cost=@ud in=@ud out=@ud])
     ?.(stt ~ (read-stt-usage:aopen body.res))
+  =/  priced=(unit @ud)  ?:(stt ~ (read-cost:aopen body.res))
+  =/  outs=@ud  ?:(?=(%chat kind) out.toks 0)
   =/  bill=[amount=@ud cost=@ud in=@ud out=@ud]
-    ?~  spoke
-      [(add in-charge out-charge) (add in-cost out-cost) in.toks ?:(?=(%chat kind) out.toks 0)]
-    [(debit-for:aopen cost.u.spoke 0 markup.s) cost.u.spoke in.u.spoke out.u.spoke]
+    ?^  spoke
+      [(debit-for:aopen cost.u.spoke 0 markup.s) cost.u.spoke in.u.spoke out.u.spoke]
+    ?^  priced
+      [(debit-for:aopen u.priced 0 markup.s) u.priced in.toks outs]
+    [(add in-charge out-charge) (add in-cost out-cost) in.toks outs]
   =/  answer=json  (fall (de:json:html body.res) ~)
   =/  mode=@t  'proxy'
   =/  op=json
