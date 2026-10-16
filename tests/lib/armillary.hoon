@@ -240,6 +240,21 @@
     (expect-eq !>(`@ud`1) !>(in.head))
     (expect !>(enabled.head))
   ==
+::  a second provider offering a model id already sold comes in under
+::  its own name, and importing it again adds nothing
+::
+++  test-merge-import-other-provider
+  =/  held=(list model-row:arm)
+    ~[['stub/alpha' 'stub' 'stub/alpha' 1 2 0 0 & ~]]
+  =/  fresh=(list model-row:arm)  (import-rows:arm 'box' 130 models-body)
+  =/  got=(list model-row:arm)  (merge-import:arm held fresh)
+  =/  ids=(list @t)  (turn got |=(r=model-row:arm id.r))
+  =/  ups=(list @t)  (turn got |=(r=model-row:arm upstream.r))
+  ;:  weld
+    (expect-eq !>(`(list @t)`~['stub/alpha' 'box/stub/alpha' 'stub/beta']) !>(ids))
+    (expect-eq !>(`(list @t)`~['stub/alpha' 'stub/alpha' 'stub/beta']) !>(ups))
+    (expect-eq !>(got) !>((merge-import:arm got fresh)))
+  ==
 ::  ==  an upstream answer
 ::
 ++  test-read-usage
@@ -301,6 +316,18 @@
     (expect-eq !>('https://api.stripe.com') !>(?:(?=(%& -.got) stripe-url.p.got '')))
     (expect-eq !>('') !>(?:(?=(%& -.got) stripe-key.p.got 'x')))
     (expect-eq !>('') !>(?:(?=(%& -.got) lease-provider.p.got 'x')))
+    (expect-eq !>(|) !>(?:(?=(%& -.got) own-free.p.got &)))
+  ==
+::  own_free is off when a document written before it has none, and it
+::  round-trips when set
+::
+++  test-de-settings-own-free
+  =/  old  (de-settings:arm (jo '{"markup_pct":130,"mode":"stub"}'))
+  =/  got  (de-settings:arm (jo '{"markup_pct":130,"mode":"stub","own_free":true}'))
+  =/  back=json  ?:(?=(%& -.got) (en-settings:arm p.got) ~)
+  ;:  weld
+    (expect-eq !>(|) !>(?:(?=(%& -.old) own-free.p.old &)))
+    (expect-eq !>(b+&) !>((gj:arm back 'own_free')))
   ==
 ::  the provider whose provisioning key mints leases is a plain id, so
 ::  it round-trips unmasked while the keys beside it do not

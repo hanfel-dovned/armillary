@@ -609,13 +609,24 @@
   =/  rest=(list @t)  (skip tags.r |=(t=@t =('zdr' t)))
   r(tags ?.((~(has in ids) upstream.r) rest (snoc rest 'zdr')))
 ::  +merge-import: fresh rows appended to the catalog, leaving every id
-::  the owner already priced exactly as it is
+::  the owner already priced exactly as it is. A fresh id that another
+::  provider's row holds comes in as <provider>/<id>, so two servers
+::  offering one model are both sold.
 ::
 ++  merge-import
   |=  [cat=(list model-row) fresh=(list model-row)]
   ^-  (list model-row)
-  =/  held=(set @t)  (sy (turn cat |=(r=model-row id.r)))
-  (weld cat (skip fresh |=(r=model-row (~(has in held) id.r))))
+  =/  owner=(map @t @t)  (malt (turn cat |=(r=model-row [id.r provider.r])))
+  =/  renamed=(list model-row)
+    %+  turn  fresh
+    |=  r=model-row
+    =/  had=(unit @t)  (~(get by owner) id.r)
+    ?:  |(?=(~ had) =(u.had provider.r))  r
+    r(id (rap 3 provider.r '/' id.r ~))
+  =/  held=(set @t)  ~(key by owner)
+  %+  weld  cat
+  %+  skip  renamed
+  |=(r=model-row |((~(has in held) id.r) (gth (met 3 id.r) max-model-id)))
 ::  +is-transcription: a row that turns speech into text. It is sold on
 ::  /v1/audio/transcriptions only, and kept out of the model lists a
 ::  client offers for chat.
@@ -1101,6 +1112,10 @@
   ==
 ::  ==  settings
 ::
+::  own-free: a call on a key this ship's own account holds is not
+::  charged, for an owner running their own inference. Off by default,
+::  so a vendor buying from itself to test its rails still pays.
+::
 +$  settings
   $:  markup=@ud
       min-topup=@ud
@@ -1117,6 +1132,7 @@
       lease-provider=@t
       stripe-minutes=@ud
       btcpay-minutes=@ud
+      own-free=?
   ==
 ::  +stripe-base: where Stripe's API lives. A blank stripe_url is the
 ::  real one; the gate points it at the stub instead.
@@ -1152,6 +1168,7 @@
       ['lease_provider' s+'']
       ['stripe_minutes' (en-num 1.440)]
       ['btcpay_minutes' (en-num 60)]
+      ['own_free' b+|]
   ==
 ++  de-settings
   |=  jon=json
@@ -1186,6 +1203,7 @@
       (gs jon 'lease_provider')
       ?.((has-key jon 'stripe_minutes') 1.440 (gn jon 'stripe_minutes'))
       ?.((has-key jon 'btcpay_minutes') 60 (gn jon 'btcpay_minutes'))
+      (gb jon 'own_free')
   ==
 ++  en-settings
   |=  s=settings
@@ -1206,6 +1224,7 @@
       ['lease_provider' s+lease-provider.s]
       ['stripe_minutes' (en-num stripe-minutes.s)]
       ['btcpay_minutes' (en-num btcpay-minutes.s)]
+      ['own_free' b+own-free.s]
   ==
 ::  ==  plans
 ::

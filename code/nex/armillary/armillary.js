@@ -585,10 +585,18 @@
     var cur = editing ? (plans.filter(function (p) { return p.id === editing; })[0] || null) : null;
     out += planForm(cur);
     out += leaseSetting(s, provs);
+    out += ownUse(s);
     out += refundsCard(refunds || []);
     out += ringCard('Recent Stripe outcomes', 'stripe.', log);
     out += ringCard('Recent BTCPay outcomes', 'btcpay.', log);
     return out;
+  }
+  // whether this ship pays for its own use when it is its own customer
+  function ownUse(s) {
+    return '<div class="card"><h2>Your own use</h2>' +
+      '<p class="muted">For running your own inference: with this ship as its own vendor, calls on its own keys need no balance and are not charged, and its own searches neither. Leave it off to test the payment rails on yourself.</p>' +
+      '<div class="inline"><div class="field"><label><input id="own-free" type="checkbox"' + (s.own_free ? ' checked' : '') + '> My own ship is not charged</label></div>' +
+      '<div class="field"><button data-save-own="1">Save</button></div></div></div>';
   }
   // bitcoin payments that landed on accounts being deleted: the owner
   // refunds each from BTCPay and says so here
@@ -1345,6 +1353,7 @@
       lease_provider: was.lease_provider || '',
       stripe_minutes: was.stripe_minutes === undefined ? 1440 : was.stripe_minutes,
       btcpay_minutes: was.btcpay_minutes === undefined ? 60 : was.btcpay_minutes,
+      own_free: !!was.own_free,
     };
     Object.keys(extra).forEach(function (k) { body[k] = extra[k]; });
     return post('/settings', body, 'PUT');
@@ -1712,6 +1721,11 @@
         btcpay_key: document.getElementById('bt-key').value.trim(),
         btcpay_webhook_secret: document.getElementById('bt-hook').value.trim(),
       }).then(function () { say('saved'); later(); })
+        .catch(function (e) { say(e.message, true); });
+    } else if (d.saveOwn) {
+      var of = document.getElementById('own-free');
+      saveSettings({ own_free: !!(of && of.checked) })
+        .then(function () { say('saved'); later(); })
         .catch(function (e) { say(e.message, true); });
     } else if (d.saveLease) {
       var lp = document.getElementById('ls-prov');

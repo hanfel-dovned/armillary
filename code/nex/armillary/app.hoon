@@ -3646,14 +3646,17 @@
 ::    The timer wire carries a nonce, so two request fibers in flight
 ::    never take each other's wake.
 ::
-++  fetch
-  |=  =request:http
+++  fetch  |=(=request:http (fetch-for request ~m2))
+::  +fetch-for: +fetch with its own deadline
+::
+++  fetch-for
+  |=  [=request:http span=@dr]
   =/  m  (fiber:fiber:nexus ,[status=@ud body=@t])
   ^-  form:m
   ;<  wir=wire  bind:m  (nonce:io /fetch)
   ;<  ~  bind:m  (send-request:io request)
   ;<  now=@da  bind:m  get-time:io
-  ;<  ~  bind:m  (set-timer:io wir (add now ~m2))
+  ;<  ~  bind:m  (set-timer:io wir (add now span))
   ;<  got=fetch-in  bind:m  (take-fetch wir)
   ;<  ~  bind:m  (cancel-timer:io wir)
   ?:  ?=(%veto -.got)  (pure:m [0 'the iris road is refused'])
@@ -3662,17 +3665,18 @@
   ?.  ?=(%finished -.r)  (pure:m [0 ''])
   =/  body=@t  ?~(full-file.r '' q.data.u.full-file.r)
   (pure:m [status-code.response-header.r body])
-::  +post-json: a JSON POST to a provider with its bearer key
+::  +post-json: a JSON POST to a provider with its bearer key, waiting
+::  .span for the answer
 ::
 ++  post-json
-  |=  [url=@t api-key=@t body=json]
+  |=  [url=@t api-key=@t body=json span=@dr]
   =/  m  (fiber:fiber:nexus ,[status=@ud body=@t])
   ^-  form:m
   =/  heads=(list [@t @t])
     :~  ['content-type' 'application/json']
         ['authorization' (rap 3 'Bearer ' api-key ~)]
     ==
-  (fetch [%'POST' url heads `(as-octs:mimes:html (en:json:html body))])
+  (fetch-for [%'POST' url heads `(as-octs:mimes:html (en:json:html body))] span)
 ::  +get-json: a JSON GET from a provider with its bearer key
 ::
 ++  get-json
@@ -3924,7 +3928,7 @@
   ;<  jon=json  bind:m  (read-json (rf up / %'settings.json'))
   =/  got  (de-settings:arm jon)
   ?:  ?=(%| -.got)
-    (pure:m [130 5.000.000 '' %stub | '' '' stripe-base:arm '' '' '' '' '' 1.440 60])
+    (pure:m [130 5.000.000 '' %stub | '' '' stripe-base:arm '' '' '' '' '' 1.440 60 |])
   (pure:m p.got)
 ::  +two-xx: did the upstream say yes
 ::
@@ -4036,7 +4040,7 @@
         ['max_tokens' (numb:enjs:format 5)]
     ==
   ;<  res=[status=@ud body=@t]  bind:m
-    (post-json (join-url base-url.u.p '/chat/completions') api-key.u.p body)
+    (post-json (join-url base-url.u.p '/chat/completions') api-key.u.p body ~m2)
   =/  answer=json  (fall (de:json:html body.res) ~)
   =/  choices=(list json)  (ga:arm answer 'choices')
   =/  text=@t
@@ -4178,11 +4182,14 @@
   ;<  bj=json  bind:m  (read-json (rf 1 / %'brave.json'))
   =/  key=@t  (gs:arm bj 'key')
   ?:  =('' key)  (send-err eyre-id 503 'brave: the vendor has no Brave key')
+  ;<  s=settings:arm  bind:m  (settings-of 1)
+  ;<  our=@p  bind:m  get-our:io
+  =/  free=?  &(own-free.s =(ship.act our))
   ;<  a=(unit account:arm)  bind:m
     ?:  owner.act  (pure:(fiber:fiber:nexus ,(unit account:arm)) ~)
     (live-account-at 1 ship.act)
   ?:  &(!owner.act ?=(~ a))  (send-err eyre-id 403 'forbidden')
-  ?:  &(?=(^ a) |(!(syn:si balance.u.a) =(--0 balance.u.a)))
+  ?:  &(!free ?=(^ a) |(!(syn:si balance.u.a) =(--0 balance.u.a)))
     (send-err eyre-id 402 'balance: empty')
   =/  api=@t  =/(u=@t (gs:arm bj 'url') ?:(=('' u) 'https://api.search.brave.com' u))
   =/  url=@t  (brave-url:arm api p (turn args |=([k=@t v=@t] [k v])))
@@ -4196,7 +4203,7 @@
       (poke-writer 1 (pairs:enjs:format ~[['op' s+'count-search'] ['ship' s+(scot %p ship.act)]]))
     ::  a search Brave refused costs the vendor nothing
     ?.  &((gte status.res 200) (lth status.res 300))  (pure:n ~)
-    ;<  s=settings:arm  bind:n  (settings-of 1)
+    ?:  free  (pure:n ~)
     =/  cost=@ud  (brave-cost:arm bj)
     %+  poke-writer  1
     %-  pairs:enjs:format
@@ -4917,16 +4924,21 @@
   ;<  pm=(map @t provider:arm)  bind:m  (providers-of 1)
   =/  p=(unit provider:arm)  (~(get by pm) provider.u.row)
   ?~  p  (send-err eyre-id 404 'model: not offered')
+  ;<  s=settings:arm  bind:m  (settings-of 1)
+  ;<  our=@p  bind:m  get-our:io
+  ::  the owner's own inference, on a key this ship's own account holds,
+  ::  when own_free says so: no balance, no charge, no cost needed
+  =/  free=?  &(own-free.s =(ship.act our))
   ::  a transcription is charged at the cost OpenRouter reports, since
   ::  its price may be per second or per token. ponytail: OpenRouter
-  ::  only; another provider reports no cost, and needs a per second
-  ::  price in the catalog first
-  ?:  &(stt !?=(%openrouter kind.u.p))
+  ::  only for a paid call; another provider reports no cost, and needs
+  ::  a per second price in the catalog first
+  ?:  &(stt !free !?=(%openrouter kind.u.p))
     (send-err eyre-id 400 'model: transcription is served through an OpenRouter provider only')
   ;<  a=(unit account:arm)  bind:m  (live-account-at 1 ship.act)
   ?~  a  (send-err eyre-id 403 'forbidden')
-  ?.  (syn:si balance.u.a)  (send-err eyre-id 402 'balance: empty')
-  ?:  =(--0 balance.u.a)  (send-err eyre-id 402 'balance: empty')
+  ?:  &(!free |(!(syn:si balance.u.a) =(--0 balance.u.a)))
+    (send-err eyre-id 402 'balance: empty')
   ?:  (is-stream:arm jon)
     (send-err eyre-id 400 'stream: not supported on the proxy; take a lease')
   =/  body=json  (swap-model:arm jon upstream.u.row)
@@ -4944,7 +4956,7 @@
       %transcription  '/audio/transcriptions'
     ==
   ;<  res=[status=@ud body=@t]  bind:m
-    (post-json (join-url base-url.u.p leaf) api-key.u.p body)
+    (post-json (join-url base-url.u.p leaf) api-key.u.p body ~m10)
   ?:  =(0 status.res)
     %^  send-json  eyre-id  504
     %-  pairs:enjs:format
@@ -4952,7 +4964,7 @@
         %-  pairs:enjs:format
         :~  :-  'message'
             :-  %s
-            (rap 3 'no answer from ' name.u.p ' within two minutes' ~)
+            (rap 3 'no answer from ' name.u.p ' within ten minutes' ~)
         ==
     ==
   ?.  &((gte status.res 200) (lth status.res 300))
@@ -4962,6 +4974,7 @@
     =/  code=tape  (a-co:co status.res)
     =/  why=@t  (rap 3 name.u.p ' answered ' (crip code) ~)
     (send-err eyre-id status.res why)
+  ?:  free  (send-raw eyre-id status.res body.res)
   =/  usage=(unit [in=@ud out=@ud])  (read-usage:arm body.res)
   =/  toks=[in=@ud out=@ud]  ?~(usage [0 0] u.usage)
   =/  in-charge=@ud   (charge:arm in.toks in.u.row)
@@ -4971,7 +4984,6 @@
   ::  what OpenRouter says the call cost, at the markup, the way a
   ::  lease's spending is charged; token prices only when it said
   ::  nothing
-  ;<  s=settings:arm  bind:m  (settings-of 1)
   =/  spoke=(unit [cost=@ud in=@ud out=@ud])
     ?.(stt ~ (read-stt-usage:aopen body.res))
   =/  priced=(unit @ud)  ?:(stt ~ (read-cost:aopen body.res))
