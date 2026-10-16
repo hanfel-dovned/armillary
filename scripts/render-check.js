@@ -29,8 +29,11 @@ is(r.checkoutRows(co, true).split('data-cancel-checkout').length === 2, 'only th
 is(r.checkoutRows(co).indexOf('data-cancel-checkout') < 0, "the owner's view of an account offers no Cancel");
 is(r.freshness({ stale: 120, fetched: 'x', fetch_ms: 2100 }).indexOf('2 min ago, in 2.1 s') > 0, 'the balance says its age and read time');
 is(r.freshness({}).indexOf('Refresh reads it now') > 0, 'a balance never read says so');
-var card = r.suggestedCard([{ id: 'a/b', enabled: true }, { id: 'c/d', enabled: false }]);
-is(card.indexOf('Orrery generator') > 0 && (card.match(/data-pick="1"/g) || []).length === 4, 'every tier is a model search box');
+var card = r.suggestedCard([{ id: 'a/b', enabled: true }, { id: 'c/d', enabled: false }, { id: 'w/1', enabled: true, tags: ['transcription'] }]);
+is(card.indexOf('Orrery generator') > 0 && (card.match(/data-pick="1"/g) || []).length === 5, 'every tier is a model search box');
+var pickIds = function (box) { return (r.pickModels[box] || []).map(function (m) { return m.id; }); };
+is(pickIds('tier-transcription').join() === 'w/1', 'the transcription tier offers the speech to text models alone');
+is(pickIds('tier-frontier').indexOf('w/1') < 0 && pickIds('tier-decision').indexOf('w/1') < 0 && pickIds('tier-frontier').indexOf('a/b') >= 0, 'and no other tier offers them');
 is(card.indexOf('Talon decision gate') > 0 && card.indexOf('data-tier="decision"') > 0, 'every feature and the decision tier are there');
 is(card.indexOf('id="feat-dictation"') > 0 && card.indexOf('Talon dictation') > 0, 'dictation has its picker');
 // the lib's +feature-names is the list: the page shows a picker for each

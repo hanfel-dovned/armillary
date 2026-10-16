@@ -22,6 +22,7 @@
 ++  max-keys       20
 ++  ring-cap       500
 ++  max-body       4.194.304
+++  max-audio      16.777.216                   ::  a transcription's body, its audio in base64
 ::  ==  time
 ::
 ::  +unix-secs: seconds since 1970, 0 before it
@@ -615,6 +616,24 @@
   ^-  (list model-row)
   =/  held=(set @t)  (sy (turn cat |=(r=model-row id.r)))
   (weld cat (skip fresh |=(r=model-row (~(has in held) id.r))))
+::  +is-transcription: a row that turns speech into text. It is sold on
+::  /v1/audio/transcriptions only, and kept out of the model lists a
+::  client offers for chat.
+::
+++  is-transcription  |=(r=model-row ^-(? (lien tags.r |=(t=@t =('transcription' t)))))
+::  +with-transcription: each of .provider's rows whose upstream model
+::  OpenRouter lists for transcription, tagged so. OpenRouter's default
+::  /models leaves these models out, so the import reads a second list.
+::  A tag is only added: a model gone from the list keeps it.
+::
+++  with-transcription
+  |=  [rows=(list model-row) provider=@t ids=(set @t)]
+  ^-  (list model-row)
+  %+  turn  rows
+  |=  r=model-row
+  ?.  &(=(provider provider.r) (~(has in ids) upstream.r))  r
+  ?:  (is-transcription r)  r
+  r(tags (snoc tags.r 'transcription'))
 ::  ==  an upstream answer
 ::
 ::  +read-usage: the token counts an upstream reported, or ~ when it
@@ -1841,16 +1860,17 @@
   ==
 ::  ==  the AI a vendor drives
 ::
-::  The vendor names a model for each of four tiers and says which tier
+::  The vendor names a model for each of five tiers and says which tier
 ::  each feature of its customers' apps uses. It travels in every
 ::  account's view, so a customer reads it on its next pass. An app reads
 ::  .models, the map resolved to feature -> model with default the
-::  frontier model, and switches when .rev moves; version 18 answered
-::  .models alone, so an app reading models[feature] works with both.
+::  frontier model and transcription the speech to text model, and
+::  switches when .rev moves; version 18 answered .models alone, so an
+::  app reading models[feature] works with both.
 ::
 ++  tier-names
   ^-  (list @t)
-  ~['frontier' 'decision' 'zdr' 'private']
+  ~['frontier' 'decision' 'zdr' 'private' 'transcription']
 ::  +feature-names: the features the family's apps read. The server
 ::  takes any name (a client's own too); this list is what the page's
 ::  FEATURES and the README must both carry, and render-check.js holds
@@ -1893,7 +1913,8 @@
   |-  ^-  (each (map @t @t) @t)
   ?~  rows  [%& out]
   =/  k=@t  k.i.rows
-  ?~  (find ~[k] tier-names)  [%| (rap 3 'tier ' k ': frontier, decision, zdr or private' ~)]
+  ?~  (find ~[k] tier-names)
+    [%| (rap 3 'tier ' k ': frontier, decision, zdr, private or transcription' ~)]
   ?.  ?=([%s *] v.i.rows)  [%| (rap 3 'tiers.' k ': a model id' ~)]
   =/  id=@t  p.v.i.rows
   ?:  (gth (met 3 id) max-name)  [%| (rap 3 'tiers.' k ': 200 bytes at most' ~)]
@@ -1913,6 +1934,10 @@
   ?.  ?=([%s *] v.i.rows)  [%| (rap 3 'features.' k ': a tier' ~)]
   =/  tier=@t  p.v.i.rows
   ?:  =('' tier)  $(rows t.rows)
+  ::  the transcription tier turns speech into text, which no feature's
+  ::  prompt is; and its name is taken in .models
+  ?:  |(=('transcription' tier) =('transcription' k))
+    [%| (rap 3 'features.' k ': the transcription tier is for speech to text, not a feature' ~)]
   ?:  &(?=(^ (find ~[k] zdr-only)) !=('zdr' tier))
     [%| (rap 3 'features.' k ': the zdr tier only, since it reads what the owner browses' ~)]
   ?.  (~(has by tiers) tier)  [%| (rap 3 'features.' k ': tier ' tier ' has no model' ~)]
@@ -1949,6 +1974,10 @@
     %-  ~(gas by out)
     %+  turn  (skip zdr-only |=(f=@t (~(has by out) f)))
     |=(f=@t [f u.zdr])
+  ::  the transcription model rides beside default, under its tier's
+  ::  name, since no feature maps onto it
+  =/  stt=(unit @t)  (~(get by tiers.s) 'transcription')
+  =?  out  ?=(^ stt)  (~(put by out) 'transcription' u.stt)
   =/  front=(unit @t)  (~(get by tiers.s) 'frontier')
   ?~(front out (~(put by out) 'default' u.front))
 ++  en-suggestion

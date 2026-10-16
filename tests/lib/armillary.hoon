@@ -959,7 +959,7 @@
     :-  !>('tiers: an object of tier to model id')
     !>((why (de-suggestion:arm (jo '{"features":{}}'))))
     %-  expect-eq
-    :-  !>('tier huge: frontier, decision, zdr or private')
+    :-  !>('tier huge: frontier, decision, zdr, private or transcription')
     !>((why (de-suggestion:arm (jo '{"tiers":{"huge":"x"}}'))))
     %-  expect-eq
     :-  !>('features.assistant: tier zdr has no model')
@@ -1025,6 +1025,45 @@
     %-  expect-eq
     :-  !>('features: 32 at most')
     !>((why (de-features:arm [['f33' s+'frontier'] named] tiers)))
+  ==
+::  the transcription tier names the speech to text model, which rides
+::  in .models beside default; no feature may map onto it or take its
+::  name
+::
+++  test-transcription-tier
+  =/  tiers=(map @t @t)  (my ~[['frontier' 'f/1'] ['transcription' 'w/1']])
+  ;:  weld
+    %-  expect-eq
+    :-  !>(`(unit @t)``'w/1')
+    !>((~(get by (resolve:arm [tiers ~])) 'transcription'))
+    %-  expect-eq
+    :-  !>(`(unit @t)``'f/1')
+    !>((~(get by (resolve:arm [tiers ~])) 'default'))
+    %-  expect-eq
+    :-  !>(`(unit @t)`~)
+    !>((~(get by (resolve:arm [(my ~[['frontier' 'f/1']]) ~])) 'transcription'))
+    %-  expect-eq
+    :-  !>('features.assistant: the transcription tier is for speech to text, not a feature')
+    !>((why (de-features:arm ~[['assistant' s+'transcription']] tiers)))
+    %-  expect-eq
+    :-  !>('features.transcription: the transcription tier is for speech to text, not a feature')
+    !>((why (de-features:arm ~[['transcription' s+'frontier']] tiers)))
+  ==
+::  an import tags the provider's rows OpenRouter lists for
+::  transcription, once, and leaves every other row alone
+::
+++  test-with-transcription
+  =/  w=model-row:arm  ['or/whisper' 'or' 'or/whisper' 0 0 0 0 | ~]
+  =/  c=model-row:arm  ['or/chat' 'or' 'or/chat' 0 0 0 0 | ~['zdr']]
+  =/  o=model-row:arm  ['x/whisper' 'other' 'or/whisper' 0 0 0 0 | ~]
+  =/  out  (with-transcription:arm ~[w c o] 'or' (sy ~['or/whisper']))
+  ;:  weld
+    (expect-eq !>(~['transcription']) !>(tags:(snag 0 out)))
+    (expect-eq !>(~['zdr']) !>(tags:(snag 1 out)))
+    (expect-eq !>(`(list @t)`~) !>(tags:(snag 2 out)))
+    (expect-eq !>(~['transcription']) !>(tags:(snag 0 (with-transcription:arm out 'or' (sy ~['or/whisper'])))))
+    (expect-eq !>(%.y) !>((is-transcription:arm (snag 0 out))))
+    (expect-eq !>(%.n) !>((is-transcription:arm c)))
   ==
 ::  ==  Brave search, on the vendor's key
 ::

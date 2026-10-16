@@ -94,13 +94,16 @@
       '</div>';
   }
 
-  // the four tiers a vendor fills, and the features of its customers'
-  // apps it maps onto them; a feature stored that is not here still shows
+  // the five tiers a vendor fills, and the features of its customers'
+  // apps it maps onto them; a feature stored that is not here still shows.
+  // The transcription tier names the speech to text model, and no
+  // feature maps onto it
   var TIERS = [
     ['frontier', 'Frontier'],
     ['decision', 'Decision (the decisions API)'],
     ['zdr', 'ZDR (keeps no data)'],
     ['private', 'Private'],
+    ['transcription', 'Transcription (speech to text)'],
   ];
   // the same names as the lib's +feature-names, which render-check.js
   // holds this list to. Left at none, a feature takes the frontier model,
@@ -202,11 +205,12 @@
   // revision moves.
   function suggestedCard(rows) {
     var zdrNote = function (r) { return (r.tags || []).indexOf('zdr') >= 0 ? 'ZDR' : ''; };
-    var sold = rows.filter(function (r) { return r.enabled; }).map(function (r) { return { id: r.id, name: r.name, provider: r.provider, note: zdrNote(r) }; });
+    var stt = function (r) { return (r.tags || []).indexOf('transcription') >= 0; };
+    var sold = rows.filter(function (r) { return r.enabled; }).map(function (r) { return { id: r.id, name: r.name, provider: r.provider, note: zdrNote(r), stt: stt(r) }; });
     // a model the catalog holds but does not sell is listed too, marked,
     // so the search never says a model is not there when it is; saving
     // one is refused until it is switched on
-    var unsold = rows.filter(function (r) { return !r.enabled; }).map(function (r) { return { id: r.id, name: r.name, provider: r.provider, note: (zdrNote(r) ? 'ZDR, ' : '') + 'not for sale: switch it on in the catalog below' }; });
+    var unsold = rows.filter(function (r) { return !r.enabled; }).map(function (r) { return { id: r.id, name: r.name, provider: r.provider, note: (zdrNote(r) ? 'ZDR, ' : '') + 'not for sale: switch it on in the catalog below', stt: stt(r) }; });
     var tiers = Object.assign({}, mySuggested.tiers || {}, sgDraft.tiers);
     var feats = Object.assign({}, mySuggested.features || {}, sgDraft.features);
     var out = '<div class="card"><h2>Your customers\' AI</h2>' +
@@ -218,9 +222,13 @@
       var cur = tiers[t[0]] || '';
       // the decision tier names a model for the decisions route, which no
       // chat catalog sells: Jev first, then what is sold
+      // the transcription tier offers the speech to text models and no
+      // other tier offers them
+      var speech = t[0] === 'transcription';
+      var fits = function (m) { return !!m.stt === speech; };
       var models = t[0] === 'decision'
-        ? [{ id: 'typesafe/jev-1.13', note: 'decisions' }].concat(sold.filter(function (m) { return m.id !== 'typesafe/jev-1.13'; }))
-        : sold.concat(unsold);
+        ? [{ id: 'typesafe/jev-1.13', note: 'decisions' }].concat(sold.filter(function (m) { return m.id !== 'typesafe/jev-1.13' && !m.stt; }))
+        : sold.concat(unsold).filter(fits);
       var field = modelBox('tier-' + t[0], 'data-tier="' + t[0] + '"', cur, models,
         t[0] === 'decision' ? 'typesafe/jev-1.13' : 'search, or type a model id');
       out += '<div class="field wide"><label for="tier-' + t[0] + '">' + esc(t[1]) + '</label>' + field + '</div>';
@@ -1105,7 +1113,7 @@
     myAccount: myAccount, myKeys: myKeys, myLease: myLease, buyCatalog: buyCatalog,
     usage: usage, usageCard: usageCard,
     checkoutRows: checkoutRows, freshness: freshness, suggestedCard: suggestedCard, braveCard: braveCard, rankModels: rankModels, catalog: catalog, buyCatalog: buyCatalog, myData: myData, vendorData: vendorData, ledger: ledger, bars: bars, rateOf: rateOf, runway: runway,
-    route: route, sseEvent: sseEvent,
+    route: route, sseEvent: sseEvent, pickModels: pickModels,
   };
   if (typeof module !== 'undefined' && module.exports) { module.exports = render; }
   if (typeof document === 'undefined') { return; }

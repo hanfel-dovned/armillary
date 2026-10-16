@@ -25,6 +25,12 @@ Models it knows:
   stub/free   unpriced, so an import leaves its prices at zero
   stub/error  answers 500 with a message, so the gate sees a pass through
   stub/slow   sleeps past the ship's two minute deadline, so the gate sees a 504
+  stub/whisper  speech to text, listed only under
+              GET /v1/models?output_modalities=transcription, the way
+              OpenRouter lists its transcription models; POST
+              /v1/audio/transcriptions answers OpenRouter's shape, with
+              usage.cost 0.000508, and /stub/requests then shows the
+              model, the format and how many base64 bytes came
 
 GET /stub/requests answers how many bodies it has seen and the last one,
 so a gate can assert the ship swapped `model` and dropped `stream`.
@@ -35,6 +41,7 @@ import sys
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+SPEECH = [{"id": "stub/whisper", "pricing": {"prompt": "0.0001", "completion": "0"}}]
 MODELS = [
     {"id": "stub/alpha", "pricing": {"prompt": "0.000003", "completion": "0.000015"}},
     {"id": "stub/beta", "pricing": {"prompt": "0.0000015", "completion": "0.000006"}},
@@ -138,6 +145,12 @@ class Handler(BaseHTTPRequestHandler):
             # OpenRouter's list of endpoints that keep nothing: alpha has one
             self.send(200, {"data": [{"model_id": "stub/alpha", "provider_name": "Stub ZDR", "name": "stub/alpha-zdr"}]})
             return
+        if self.path == "/v1/models?output_modalities=transcription":
+            if not self.bearer_ok():
+                self.send(401, {"error": {"message": "bad key"}})
+                return
+            self.send(200, {"data": SPEECH})
+            return
         if self.path.rstrip("/") == "/v1/models":
             if not self.bearer_ok():
                 self.send(401, {"error": {"message": "bad key"}})
@@ -181,12 +194,17 @@ class Handler(BaseHTTPRequestHandler):
             rec["updated_at"] = now_iso()
             self.send(200, {"data": record(rec)})
             return
-        if path not in ("/v1/chat/completions", "/v1/embeddings"):
+        if path not in ("/v1/chat/completions", "/v1/embeddings", "/v1/audio/transcriptions"):
             self.send(404, {"error": {"message": "no such route"}})
             return
         body = self.read_body()
         STATE["count"] += 1
         STATE["last"] = body
+        if path == "/v1/audio/transcriptions":
+            # the audio is kept out of /stub/requests: its size says enough
+            audio = body.get("input_audio") or {}
+            STATE["last"] = {"model": body.get("model"), "format": audio.get("format"),
+                             "bytes": len(audio.get("data") or "")}
         lease = self.leased()
         if lease is not None:
             # a leased key spends like the real thing: a flat cent a
@@ -202,6 +220,15 @@ class Handler(BaseHTTPRequestHandler):
             lease["updated_at"] = now_iso()
         elif not self.bearer_ok():
             self.send(401, {"error": {"message": "bad key"}})
+            return
+        if path == "/v1/audio/transcriptions":
+            audio = body.get("input_audio") or {}
+            if not audio.get("data") or not audio.get("format"):
+                self.send(400, {"error": {"message": "input_audio.data and input_audio.format are required"}})
+                return
+            self.send(200, {"text": "ok: heard %d bytes" % len(audio["data"]),
+                            "usage": {"seconds": 9.2, "total_tokens": 113, "input_tokens": 83,
+                                      "output_tokens": 30, "cost": 0.000508}})
             return
         if path == "/v1/embeddings":
             self.send(
