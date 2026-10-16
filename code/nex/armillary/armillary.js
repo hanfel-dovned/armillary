@@ -106,6 +106,7 @@
     ['catch_up', 'Talon catch-up'],
     ['assistant', 'Talon assistant'],
     ['decision', 'Talon decision gate'],
+    ['dictation', 'Talon dictation'],
     ['orrery_generator', 'Orrery generator, refine and brief'],
     ['orrery_mail', 'Orrery mail reader'],
     ['orrery_chat', 'Orrery chat reader'],

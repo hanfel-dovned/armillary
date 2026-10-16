@@ -1853,7 +1853,7 @@
   ~['frontier' 'decision' 'zdr' 'private']
 ++  feature-names
   ^-  (list @t)
-  :~  'catch_up'  'assistant'  'decision'
+  :~  'catch_up'  'assistant'  'decision'  'dictation'
       'orrery_generator'  'orrery_mail'  'orrery_chat'
       'orrery_telegram'  'orrery_read'  'orrery_decider'
       'orrery_browsing'

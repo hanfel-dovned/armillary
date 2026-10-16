@@ -1068,6 +1068,23 @@
   ==
 ::  ==  a feature only the zdr tier may run
 ::
+::  Talon's dictation is mapped like any feature: its tier's model when
+::  mapped, and nothing when not, which Talon reads as "the assistant's"
+::
+++  test-dictation-feature
+  =/  tiers=(map @t @t)  (my ~[['frontier' 'f/1'] ['zdr' 'z/1']])
+  =/  ok  (de-features:arm ~[['dictation' s+'zdr']] tiers)
+  ;:  weld
+    (expect-eq !>(%.y) !>(?=(%& -.ok)))
+    (expect-eq !>(%.y) !>(?=(^ (find ~['dictation'] feature-names:arm))))
+    %-  expect-eq
+    :-  !>(`(unit @t)``'z/1')
+    !>((~(get by (resolve:arm [tiers (my ~[['dictation' 'zdr']])])) 'dictation'))
+    %-  expect-eq
+    :-  !>(`(unit @t)`~)
+    !>((~(get by (resolve:arm [tiers ~])) 'dictation'))
+  ==
+::
 ::  Orrery's browsing reader may be mapped to the zdr tier and no other,
 ::  and left unmapped it takes the zdr model rather than the default
 ::
