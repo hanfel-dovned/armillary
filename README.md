@@ -98,7 +98,7 @@ Refusals on the proxy: 403 with no valid key, 404 `model: not offered`, 402 `bal
 
 | route | answers |
 |---|---|
-| `GET` and `PUT /api/settings` | markup, minimum top-up, public URL, mode, `refuse_comets`, the Stripe and BTCPay fields, `lease_provider`, how many minutes a checkout on each rail stays open, and `own_free` (version 33: this ship's own keys are not charged when it is its own customer); every secret masked on read, a blank field keeps the stored one and a JSON `null` clears it |
+| `GET` and `PUT /api/settings` | markup, minimum top-up, public URL, mode, `refuse_comets`, the Stripe and BTCPay fields, `lease_provider`, how many minutes a checkout on each rail stays open, `own_free` (version 33: this ship's own keys are not charged when it is its own customer), and `stub_open` (version 33: stub mode credits other ships too, for a test rig only); every secret masked on read, a blank field keeps the stored one and a JSON `null` clears it |
 | `GET /api/providers` | every provider, both secrets masked |
 | `POST /api/providers` | a new row; 409 when the id is taken |
 | `PUT /api/providers/<id>` | an edit; 409 when the id is unknown. A blank secret keeps the stored one, a JSON `null` clears it |
@@ -175,7 +175,7 @@ curl -s -b jar "$API/inference"
 
 The ops go over ames from this ship's armillary desk into the vendor's inbox, signed by ames, so the source ship is the identity and no password or claim token exists. The answers come back in an account view on the vendor that this ship alone may peek, through a usergroup the vendor makes for it. A minted key's secret crosses that way once and is cleared as soon as this ship says it has it.
 
-Topping up opens a checkout with the vendor and answers a URL to open in a browser. In stub mode that URL is the vendor's own page with one button and no money moves, which is how the whole loop is proved without a rail. In live mode it is a Stripe Checkout Session on the card rail or a BTCPay invoice on the bitcoin one, and `docs/payments.md` is how both halves work.
+Topping up opens a checkout with the vendor and answers a URL to open in a browser. In stub mode that URL is the vendor's own page with one button and no money moves, which is how the whole loop is proved without a rail. Since version 33 stub mode serves the vendor's own ship alone: another ship's checkout is refused with `this vendor takes no payments yet`, and the page will not credit it, so a ship that never set up payments cannot be topped up for free and spent from. `stub_open` in settings lifts that for the two-ship test rig. In live mode it is a Stripe Checkout Session on the card rail or a BTCPay invoice on the bitcoin one, and `docs/payments.md` is how both halves work.
 
 The Stripe key is a restricted key, `rk_`, with write on Checkout Sessions, Customers, Products, Prices, Subscriptions and the Billing Portal and read on Invoices and Disputes, and live mode will not save without the endpoint's signing secret beside it.
 

@@ -2942,6 +2942,12 @@
   =/  card=@da  (add now (mul ~m1 stripe-minutes.s))
   =/  coin=@da  (add now (mul ~m1 btcpay-minutes.s))
   =/  expires=@da  ?:(=('btcpay' rail) coin card)
+  ;<  our=@p  bind:m  get-our:io
+  ::  stub mode moves no money, so another ship's checkout there would
+  ::  be credit for nothing, spent on the owner's provider keys
+  ?:  &(?=(%stub mode.s) !=(src our) !stub-open.s)
+    %-  refuse-checkout
+    [src nonce rail plan amount expires 'refused' 'this vendor takes no payments yet']
   ?:  ?=(%stub mode.s)
     =/  url=@t
       %^  rap  3  (public-of s)
@@ -3928,7 +3934,7 @@
   ;<  jon=json  bind:m  (read-json (rf up / %'settings.json'))
   =/  got  (de-settings:arm jon)
   ?:  ?=(%| -.got)
-    (pure:m [130 5.000.000 '' %stub | '' '' stripe-base:arm '' '' '' '' '' 1.440 60 |])
+    (pure:m [130 5.000.000 '' %stub | '' '' stripe-base:arm '' '' '' '' '' 1.440 60 | |])
   (pure:m p.got)
 ::  +two-xx: did the upstream say yes
 ::
@@ -5634,6 +5640,11 @@
   ?.  (safe-nonce nonce)  (send-err eyre-id 400 'nonce: 1 to 64 bytes')
   ;<  sj=json  bind:m  (read-json (rf 1 / %'settings.json'))
   ?:  =('live' (gs:arm sj 'mode'))  (send-err eyre-id 403 'stub mode only')
+  ::  and only for this ship's own account, so a checkout another ship
+  ::  opened before stub_open went off still credits nothing
+  ;<  our=@p  bind:m  get-our:io
+  ?:  &(!=(u.who our) !(gb:arm sj 'stub_open'))
+    (send-err eyre-id 403 'stub mode credits this ship alone')
   ;<  cj=json  bind:m  (read-json (rf 1 (acct-dir u.who) %'checkouts.json'))
   =/  cm=(map @t json)  ?:(?=([%o *] cj) p.cj ~)
   =/  row=(unit json)  (~(get by cm) nonce)

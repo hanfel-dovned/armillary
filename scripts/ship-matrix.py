@@ -168,7 +168,7 @@ def settings(host, jar, **over):
            'stripe_webhook_secret': '', 'stripe_url': 'https://api.stripe.com',
            'btcpay_url': '', 'btcpay_store': '', 'btcpay_key': '',
            'btcpay_webhook_secret': '', 'lease_provider': '',
-           'stripe_minutes': 1440, 'btcpay_minutes': 60}
+           'stripe_minutes': 1440, 'btcpay_minutes': 60, 'stub_open': TWO}
     doc.update(over)
     return curl('PUT', api(host) + '/settings', doc, jar=jar)
 
@@ -236,7 +236,7 @@ broom()
 print('the vendor has something to sell')
 code, d = curl('PUT', api(HOST) + '/settings',
                {'markup_pct': MARKUP, 'min_topup': 5000000, 'public_url': '',
-                'mode': 'stub', 'refuse_comets': False}, jar=JAR)
+                'mode': 'stub', 'refuse_comets': False, 'stub_open': TWO}, jar=JAR)
 check('the vendor is in stub mode', code == 200, (code, d))
 settle()
 code, d = curl('POST', api(HOST) + '/providers',
@@ -388,6 +388,17 @@ code, d = curl('POST', v1(HOST) + '/chat/completions',
 check('a completion with no credit is 402', code == 402 and 'balance' in err_of(d), (code, d))
 
 print('the stub rail')
+if TWO:
+    # stub mode moves no money, so another ship is refused until the
+    # rig opens it
+    settings(HOST, JAR, stub_open=False)
+    settle()
+    code, co = curl('POST', api(PEER) + '/checkout', {'rail': 'stripe', 'amount': TOPUP},
+                    jar=PJAR, timeout=120)
+    check('another ship\'s checkout in stub mode is refused',
+          code == 502 and 'no payments' in err_of(co), (code, co))
+    settings(HOST, JAR)
+    settle()
 code, co = curl('POST', api(PEER) + '/checkout', {'rail': 'stripe', 'amount': TOPUP},
                 jar=PJAR, timeout=120)
 url = dictish(co).get('url', '')

@@ -317,6 +317,7 @@
     (expect-eq !>('') !>(?:(?=(%& -.got) stripe-key.p.got 'x')))
     (expect-eq !>('') !>(?:(?=(%& -.got) lease-provider.p.got 'x')))
     (expect-eq !>(|) !>(?:(?=(%& -.got) own-free.p.got &)))
+    (expect-eq !>(|) !>(?:(?=(%& -.got) stub-open.p.got &)))
   ==
 ::  own_free is off when a document written before it has none, and it
 ::  round-trips when set

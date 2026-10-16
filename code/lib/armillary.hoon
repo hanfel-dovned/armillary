@@ -1116,6 +1116,10 @@
 ::  charged, for an owner running their own inference. Off by default,
 ::  so a vendor buying from itself to test its rails still pays.
 ::
+::  stub-open: stub mode credits another ship's checkout too. Stub mode
+::  moves no money, so by default it credits this ship's own account
+::  alone; this is for the two-ship test rig and nothing else.
+::
 +$  settings
   $:  markup=@ud
       min-topup=@ud
@@ -1133,6 +1137,7 @@
       stripe-minutes=@ud
       btcpay-minutes=@ud
       own-free=?
+      stub-open=?
   ==
 ::  +stripe-base: where Stripe's API lives. A blank stripe_url is the
 ::  real one; the gate points it at the stub instead.
@@ -1169,6 +1174,7 @@
       ['stripe_minutes' (en-num 1.440)]
       ['btcpay_minutes' (en-num 60)]
       ['own_free' b+|]
+      ['stub_open' b+|]
   ==
 ++  de-settings
   |=  jon=json
@@ -1204,6 +1210,7 @@
       ?.((has-key jon 'stripe_minutes') 1.440 (gn jon 'stripe_minutes'))
       ?.((has-key jon 'btcpay_minutes') 60 (gn jon 'btcpay_minutes'))
       (gb jon 'own_free')
+      (gb jon 'stub_open')
   ==
 ++  en-settings
   |=  s=settings
@@ -1225,6 +1232,7 @@
       ['stripe_minutes' (en-num stripe-minutes.s)]
       ['btcpay_minutes' (en-num btcpay-minutes.s)]
       ['own_free' b+own-free.s]
+      ['stub_open' b+stub-open.s]
   ==
 ::  ==  plans
 ::

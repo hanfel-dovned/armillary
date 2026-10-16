@@ -1354,6 +1354,7 @@
       stripe_minutes: was.stripe_minutes === undefined ? 1440 : was.stripe_minutes,
       btcpay_minutes: was.btcpay_minutes === undefined ? 60 : was.btcpay_minutes,
       own_free: !!was.own_free,
+      stub_open: !!was.stub_open,
     };
     Object.keys(extra).forEach(function (k) { body[k] = extra[k]; });
     return post('/settings', body, 'PUT');

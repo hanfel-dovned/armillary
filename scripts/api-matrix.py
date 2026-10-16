@@ -587,6 +587,9 @@ code, d = curl('GET', PAY + '?ship=nope&nonce=gate-nonce', jar=None)
 check('a pay page for a bad ship is 400', code == 400, (code, d))
 code, d = curl('POST', PAY, {'ship': SHIP, 'nonce': 'gate-nonce'}, jar=None)
 check('a nonce that is not a checkout is 404', code == 404 and 'no such checkout' in err_of(d), (code, d))
+# stub mode moves no money, so it never credits another ship
+code, d = curl('POST', PAY, {'ship': '~feb' if SHIP != '~feb' else '~nec', 'nonce': 'gate-nonce'}, jar=None)
+check('the stub page credits no other ship', code == 403 and 'this ship alone' in err_of(d), (code, d))
 curl('PUT', API + '/settings', {'markup_pct': MARKUP, 'min_topup': 5000000, 'public_url': '',
                                 'mode': 'live', 'refuse_comets': False})
 settle()
