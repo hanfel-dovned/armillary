@@ -1851,9 +1851,15 @@
 ++  tier-names
   ^-  (list @t)
   ~['frontier' 'decision' 'zdr' 'private']
+::  +feature-names: the features the family's apps read. The server
+::  takes any name (a client's own too); this list is what the page's
+::  FEATURES and the README must both carry, and render-check.js holds
+::  them to it. Dictation left unmapped is not in .models, and Talon
+::  then runs it on the customer's own assistant model, not on default.
+::
 ++  feature-names
   ^-  (list @t)
-  :~  'catch_up'  'assistant'  'decision'
+  :~  'catch_up'  'assistant'  'decision'  'dictation'
       'orrery_generator'  'orrery_mail'  'orrery_chat'
       'orrery_telegram'  'orrery_read'  'orrery_decider'
       'orrery_browsing'
@@ -1895,7 +1901,10 @@
 ++  de-features
   |=  [rows=(list [k=@t v=json]) tiers=(map @t @t)]
   ^-  (each (map @t @t) @t)
-  ?:  (gth (lent rows) 32)  [%| 'features: 32 at most']
+  ::  only a row naming a tier counts: the page sends a blank for every
+  ::  feature it shows, so counting those cut the cap with each new row
+  ?:  (gth (lent (skip rows |=([* v=json] =(v s+'')))) 32)
+    [%| 'features: 32 at most']
   =|  out=(map @t @t)
   |-  ^-  (each (map @t @t) @t)
   ?~  rows  [%& out]

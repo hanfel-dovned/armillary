@@ -990,6 +990,42 @@
     (expect-eq !>('x/y') !>((unsold:arm (my ~[['default' 'x/y']]) sold)))
     (expect-eq !>('') !>((unsold:arm ~ sold)))
   ==
+::  Talon's dictation is mapped like any feature, on any tier: its
+::  tier's model when mapped, and nothing when not, which Talon reads
+::  as the customer's own assistant model, never as default
+::
+++  test-dictation-feature
+  =/  tiers=(map @t @t)  (my ~[['frontier' 'f/1'] ['zdr' 'z/1']])
+  =/  front  (de-features:arm ~[['dictation' s+'frontier']] tiers)
+  =/  zdr    (de-features:arm ~[['dictation' s+'zdr']] tiers)
+  ;:  weld
+    %-  expect-eq
+    :-  !>(`(unit @t)``'frontier')
+    !>(?.(?=(%& -.front) ~ (~(get by p.front) 'dictation')))
+    %-  expect-eq
+    :-  !>(`(unit @t)``'zdr')
+    !>(?.(?=(%& -.zdr) ~ (~(get by p.zdr) 'dictation')))
+    %-  expect-eq
+    :-  !>(`(unit @t)``'f/1')
+    !>((~(get by (resolve:arm [tiers (my ~[['dictation' 'frontier']])])) 'dictation'))
+    %-  expect-eq
+    :-  !>(`(unit @t)`~)
+    !>((~(get by (resolve:arm [tiers ~])) 'dictation'))
+  ==
+::  only a feature naming a tier counts toward the 32: the page sends a
+::  blank for every feature it shows
+::
+++  test-features-cap
+  =/  tiers=(map @t @t)  (my ~[['frontier' 'f/1']])
+  =/  named=(list [@t json])
+    (turn (gulf 1 32) |=(i=@ud [(crip (weld "f" (a-co:co i))) s+'frontier']))
+  =/  ok  (de-features:arm [['blank' s+''] named] tiers)
+  ;:  weld
+    (expect-eq !>(%.y) !>(?=(%& -.ok)))
+    %-  expect-eq
+    :-  !>('features: 32 at most')
+    !>((why (de-features:arm [['f33' s+'frontier'] named] tiers)))
+  ==
 ::  ==  Brave search, on the vendor's key
 ::
 ::  only the two searches the apps make pass, and every name and value

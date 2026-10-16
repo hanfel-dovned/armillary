@@ -32,6 +32,18 @@ is(r.freshness({}).indexOf('Refresh reads it now') > 0, 'a balance never read sa
 var card = r.suggestedCard([{ id: 'a/b', enabled: true }, { id: 'c/d', enabled: false }]);
 is(card.indexOf('Orrery generator') > 0 && (card.match(/data-pick="1"/g) || []).length === 4, 'every tier is a model search box');
 is(card.indexOf('Talon decision gate') > 0 && card.indexOf('data-tier="decision"') > 0, 'every feature and the decision tier are there');
+is(card.indexOf('id="feat-dictation"') > 0 && card.indexOf('Talon dictation') > 0, 'dictation has its picker');
+// the lib's +feature-names is the list: the page shows a picker for each
+// and no other, and the README names each, so the three cannot drift
+var fs = require('fs');
+var lib = fs.readFileSync(__dirname + '/../code/lib/armillary.hoon', 'utf8');
+var arm = lib.slice(lib.indexOf('++  feature-names'));
+var names = (arm.slice(0, arm.indexOf('==')).match(/'[a-z0-9_-]+'/g) || []).map(function (q) { return q.slice(1, -1); });
+is(names.length >= 11, 'feature-names read from the lib: ' + names.length);
+is((card.match(/data-feature="/g) || []).length === names.length, 'the page shows exactly the lib\'s features');
+names.forEach(function (n) { is(card.indexOf('data-feature="' + n + '"') > 0, 'the page has a picker for ' + n); });
+var readme = fs.readFileSync(__dirname + '/../README.md', 'utf8');
+names.forEach(function (n) { is(readme.indexOf('`' + n + '`') >= 0, 'the README names ' + n); });
 // Talon's ranking: a word the id starts with, then one inside it, then
 // letters strewn through; every word must fit
 var ms = [{ id: 'anthropic/claude-sonnet-4' }, { id: 'openai/gpt-4o' }, { id: 'moonshotai/kimi-k3' }, { id: 'openai/gpt-4o-mini' }];
