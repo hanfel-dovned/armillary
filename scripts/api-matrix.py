@@ -421,13 +421,54 @@ check('a chat is charged at the cost OpenRouter reports, not a stale catalog pri
 curl('PUT', API + '/catalog', cat)
 settle()
 
+print('decisions')
+DEC = HOST + '/apps/armillary/alpha/decisions'
+ask = lambda model: {'model': model, 'state': {'x': 1}, 'questions': {'urgent': {'type': 'noul'}},
+                     'provider': {'zdr': True}}
+code, sug0 = curl('GET', API + '/suggested')
+curl('PUT', API + '/suggested', {'tiers': {'frontier': 'stub/alpha'}, 'features': {}})
+settle()
+code, d = curl('POST', DEC, ask('typesafe/jev-1.13'), jar=None, bearer=SEC1)
+check('decisions with no decision tier are 404', code == 404 and 'not offered' in err_of(d), (code, d))
+code, d = curl('PUT', API + '/suggested', {'tiers': {'frontier': 'stub/alpha', 'decision': 'typesafe/jev-1.13'},
+                                            'features': {}})
+check('the decision tier names the decision model', code == 200, (code, d))
+settle()
+code, d = curl('POST', DEC, ask('stub/alpha'), jar=None, bearer=SEC1)
+check('another model on the decisions route is 404', code == 404 and 'typesafe/jev-1.13' in err_of(d), (code, d))
+code, d = curl('POST', DEC, ask('typesafe/jev-1.13'), bearer=None)
+check('the owner cookie is refused on the decisions route', code == 403, (code, d))
+before = len(ledger())
+code, d = curl('POST', DEC, ask('typesafe/jev-1.13'), jar=None, bearer=SEC1)
+check('a decision answers 200 with its answers',
+      code == 200 and dictish(dictish(d).get('answers')).get('urgent') == {'yes': 0.7}, (code, d))
+settle(2)
+rows = ledger()
+check('it is charged at the cost OpenRouter reported, marked up',
+      len(rows) == before + 1 and rows[0].get('model') == 'typesafe/jev-1.13' and rows[0].get('cost') == 200
+      and rows[0].get('amount') == 260 and rows[0].get('in') == 12, rows[:1])
+code, seen = curl('GET', STUB + '/stub/requests', jar=None)
+last = dictish(dictish(seen).get('last'))
+check('the upstream got the state, the questions and the provider rule',
+      last.get('model') == 'typesafe/jev-1.13' and dictish(last.get('provider')).get('zdr') is True
+      and 'urgent' in dictish(last.get('questions')), last)
+curl('PUT', API + '/suggested', {'tiers': {'frontier': 'stub/alpha', 'decision': 'typesafe/nocost'}, 'features': {}})
+settle()
+before = len(ledger())
+code, d = curl('POST', DEC, ask('typesafe/nocost'), jar=None, bearer=SEC1)
+settle(2)
+check('a decision that reports no cost is 502 and charges nothing',
+      code == 502 and 'no cost' in err_of(d) and len(ledger()) == before, (code, d))
+curl('PUT', API + '/suggested', {'tiers': dictish(sug0).get('tiers') or {}, 'features': dictish(sug0).get('features') or {}})
+settle()
+
 print('embeddings')
 code, d = curl('POST', V1 + '/embeddings', {'model': 'stub/alpha', 'input': 'hello'},
                jar=None, bearer=SEC1)
 check('an embedding answers 200', code == 200 and dictish(d).get('data'), (code, d))
 settle(2)
 rows = ledger()
-emb = [r for r in rows if r.get('kind') == 'debit' and r.get('out') == 0]
+emb = [r for r in rows if r.get('kind') == 'debit' and r.get('out') == 0 and r.get('model') == 'stub/alpha']
 check('an embedding charges input only', len(emb) == 1 and emb[0].get('amount') == 36, emb)
 
 print('transcription')
@@ -490,6 +531,48 @@ check('and charged like the first: two transcription debits now',
       len([r for r in ledger() if r.get('kind') == 'debit' and r.get('model') == 'stub/whisper']) == 2, len(ledger()))
 code, d = post_file(V1 + '/chat/completions', {'model': 'stub/alpha', 'messages': message('x' * 4300000)}, SEC1)
 check('a chat body of over 4 MB is still 413', code == 413 and '4 MB' in err_of(d), (code, str(d)[:120]))
+settle()
+# a server that is not OpenRouter reads OpenAI's multipart form
+code, d = curl('POST', API + '/providers', {'id': 'box', 'name': 'Box', 'kind': 'openai-compatible',
+                                            'base_url': STUB + '/v1', 'api_key': 'stub-key'})
+check('an openai-compatible provider is added', code == 200, (code, d))
+settle()
+code, d = curl('PUT', API + '/catalog', cat + [{'id': 'box/whisper', 'provider': 'box', 'upstream': 'whisper-1',
+                                                'in': 0, 'out': 0, 'cost_in': 0, 'cost_out': 0,
+                                                'enabled': True, 'tags': ['transcription']}])
+check('its speech to text model is enabled', code == 200, (code, d))
+settle()
+box = dict(speech(3000), model='box/whisper', language='en')
+code, d = curl('POST', V1 + '/audio/transcriptions', box, jar=None, bearer=SEC1)
+check('a paid transcription off OpenRouter is still 400', code == 400 and 'OpenRouter' in err_of(d), (code, d))
+settings(own_free=True)
+settle()
+before = len(ledger())
+code, d = curl('POST', V1 + '/audio/transcriptions', box, jar=None, bearer=SEC1)
+check('a free one goes as a form and answers 200',
+      code == 200 and dictish(d).get('text') == 'ok: heard 3000 bytes in a form', (code, d))
+code, seen = curl('GET', STUB + '/stub/requests', jar=None)
+last = dictish(dictish(seen).get('last'))
+check('the form carries the upstream model, the language, a JSON answer and the audio decoded',
+      last.get('multipart') is True and last.get('model') == 'whisper-1' and last.get('language') == 'en'
+      and last.get('response_format') == 'json' and last.get('filename') == 'audio.wav'
+      and last.get('bytes') == 3000 and last.get('zeros') is True, last)
+code, d = curl('POST', V1 + '/audio/transcriptions', dict(box, input_audio={'data': '!!!', 'format': 'wav'}),
+               jar=None, bearer=SEC1)
+check('audio that is not base64 is 400', code == 400 and 'base64' in err_of(d), (code, d))
+t0 = time.time()
+code, d = post_file(V1 + '/audio/transcriptions', dict(speech(3600000), model='box/whisper'), SEC1)
+took = time.time() - t0
+check('a 3.6 MB clip is decoded on the ship and sent as a form within a minute',
+      code == 200 and dictish(d).get('text') == 'ok: heard 3600000 bytes in a form' and took < 60,
+      (code, round(took, 1), str(d)[:120]))
+print('       took %.1f s' % took)
+settle(2)
+check('and nothing is charged', len(ledger()) == before, (before, len(ledger())))
+settings(own_free=False)
+curl('PUT', API + '/catalog', cat)
+settle()
+curl('DELETE', API + '/providers/box')
 settle()
 curl('PUT', API + '/suggested', {'tiers': dictish(sug0).get('tiers') or {}, 'features': dictish(sug0).get('features') or {}})
 for row in cat:
@@ -848,6 +931,15 @@ curl('PUT', API + '/vendor', {'ship': SELF})
 settle(3)
 code, k = curl('POST', API + '/keys', {'name': 'phone'}, timeout=120)
 check('the ship holds a key again', code == 200 and '.' in dictish(k).get('secret', ''), (code, k))
+code, d = curl('GET', API + '/inference')
+check('its inference answer is not free while own_free is off', code == 200 and dictish(d).get('free') is False, (code, d))
+live = dict(stripe_key=STRIPE_KEY, stripe_webhook_secret=WHSEC, stripe_url=SSTUB, public_url=HOST, mode='live')
+settings(own_free=True, **live)
+settle()
+code, d = curl('GET', API + '/inference')
+check('and free with it on, so an app does not wait on a balance', code == 200 and dictish(d).get('free') is True, (code, d))
+settings(**live)
+settle()
 code, d = curl('POST', API + '/accounts/' + SELF + '/credit',
                {'amount': 1000000, 'rail': 'owner', 'ref': 'del-1'})
 check('and a dollar', code == 200, (code, d))

@@ -284,6 +284,40 @@
     (expect !>(!(is-stream:arm (jo '{"stream":false}'))))
     (expect !>(!(is-stream:arm (jo '{}'))))
   ==
+::  the decisions route sits beside a chat base, so OpenRouter's base
+::  gives its own and the proxy's base gives the proxy's
+::
+++  test-decisions-url
+  ;:  weld
+    (expect-eq !>('https://openrouter.ai/api/alpha/decisions') !>((decisions-url:arm 'https://openrouter.ai/api/v1')))
+    (expect-eq !>('https://x.io/apps/armillary/alpha/decisions') !>((decisions-url:arm 'https://x.io/apps/armillary/v1/')))
+    (expect-eq !>('http://h:1/api/alpha/decisions') !>((decisions-url:arm 'http://h:1/api')))
+  ==
+::  OpenRouter's JSON transcription as OpenAI's multipart form, byte for
+::  byte, with audio that holds zero bytes kept whole
+::
+++  test-audio-form
+  =/  got  (audio-form:arm (jo '{"model":"whisper-1","language":"en","input_audio":{"data":"aGk=","format":"wav"}}'))
+  =/  b=@t  'armillary-0b7e2c94d1f6a35e'
+  =/  want=@t
+    %+  rap  3
+    :~  '--'  b  '\0d\0aContent-Disposition: form-data; name="model"\0d\0a\0d\0awhisper-1\0d\0a'
+        '--'  b  '\0d\0aContent-Disposition: form-data; name="response_format"\0d\0a\0d\0ajson\0d\0a'
+        '--'  b  '\0d\0aContent-Disposition: form-data; name="language"\0d\0a\0d\0aen\0d\0a'
+        '--'  b  '\0d\0aContent-Disposition: form-data; name="file"; filename="audio.wav"\0d\0a'
+        'Content-Type: application/octet-stream\0d\0a\0d\0ahi\0d\0a--'  b  '--\0d\0a'
+    ==
+  =/  zeros  (audio-form:arm (jo '{"model":"whisper-1","language":"en","input_audio":{"data":"AAA=","format":"wav"}}'))
+  =/  bad  |=(a=@t (audio-form:arm (jo (rap 3 '{"model":"m","input_audio":' a '}' ~))))
+  ;:  weld
+    %+  expect-eq
+      !>(`(unit [@t octs])`[~ (cat 3 'multipart/form-data; boundary=' b) (as-octs:mimes:html want)])
+    !>(`(unit [@t octs])`got)
+    (expect-eq !>(?~(got 0 p.body.u.got)) !>(?~(zeros 0 p.body.u.zeros)))
+    (expect-eq !>(`(unit [@t octs])`~) !>(`(unit [@t octs])`(bad '{"data":"aGk=","format":"w v"}')))
+    (expect-eq !>(`(unit [@t octs])`~) !>(`(unit [@t octs])`(bad '{"data":"aGk=","format":""}')))
+    (expect-eq !>(`(unit [@t octs])`~) !>(`(unit [@t octs])`(bad '{"data":"!!!","format":"wav"}')))
+  ==
 ::  ==  accounts and settings
 ::
 ++  test-account-roundtrip

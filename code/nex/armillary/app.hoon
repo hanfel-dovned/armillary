@@ -1985,6 +1985,7 @@
   ;<  lj=json  bind:m  (read-json (rf 0 / %'lease.json'))
   ;<  doc=json  bind:m  (read-json (rf 0 / %'view.json'))
   ;<  held=(list held-key:arm)  bind:m  (held-keys 0)
+  ;<  free=?  bind:m  (free-here 0)
   =/  sug=json  (gj:arm doc 'suggested')
   =?  sug  !?=([%o *] (gj:arm sug 'tiers'))  (en-suggestion:arm (gn:arm sug 'rev') [~ ~])
   =/  search=json  (search-of doc held)
@@ -2003,6 +2004,7 @@
       sug
       search
     ==
+  =?  out  ?=([%o *] out)  [%o (~(put by p.out) 'free' b+free)]
   ;<  was=json  bind:m  (read-json (rf 0 / %'app-inference.json'))
   ?:  =(was out)  (pure:m ~)
   (over:io (rf 0 / %'app-inference.json') [[/ %json] out])
@@ -3683,6 +3685,17 @@
         ['authorization' (rap 3 'Bearer ' api-key ~)]
     ==
   (fetch-for [%'POST' url heads `(as-octs:mimes:html (en:json:html body))] span)
+::  +post-form: a multipart POST to a provider with its bearer key
+::
+++  post-form
+  |=  [url=@t api-key=@t type=@t body=octs span=@dr]
+  =/  m  (fiber:fiber:nexus ,[status=@ud body=@t])
+  ^-  form:m
+  =/  heads=(list [@t @t])
+    :~  ['content-type' type]
+        ['authorization' (rap 3 'Bearer ' api-key ~)]
+    ==
+  (fetch-for [%'POST' url heads `body] span)
 ::  +get-json: a JSON GET from a provider with its bearer key
 ::
 ++  get-json
@@ -3810,6 +3823,8 @@
   ?:  &(=('POST' meth) ?=([%v1 %embeddings ~] suffix))
     (serve-proxy eyre-id act jon %embeddings)
   ?:  audio  (serve-proxy eyre-id act jon %transcription)
+  ?:  &(=('POST' meth) ?=([%alpha %decisions ~] suffix))
+    (serve-decisions eyre-id act jon)
   ::  Brave search on the vendor's key
   ?:  &(=('GET' meth) ?=([%brave *] suffix))
     (serve-brave eyre-id act (turn t.suffix |=(a=@ta `@t`a)) args)
@@ -4961,7 +4976,15 @@
       %embeddings     '/embeddings'
       %transcription  '/audio/transcriptions'
     ==
+  ::  any provider but OpenRouter reads a transcription as OpenAI's
+  ::  multipart form, which only a free call reaches
+  =/  form=?  &(stt !?=(%openrouter kind.u.p))
+  =/  parts=(unit [type=@t body=octs])  ?.(form ~ (audio-form:arm body))
+  ?:  &(form ?=(~ parts))
+    (send-err eyre-id 400 'input_audio: data in base64 and a format such as wav')
   ;<  res=[status=@ud body=@t]  bind:m
+    ?^  parts
+      (post-form (join-url base-url.u.p leaf) api-key.u.p type.u.parts body.u.parts ~m10)
     (post-json (join-url base-url.u.p leaf) api-key.u.p body ~m10)
   ?:  =(0 status.res)
     %^  send-json  eyre-id  504
@@ -5018,6 +5041,65 @@
   ::  between the two costs the customer nothing and the owner one
   ::  request
   ;<  ~  bind:m  (poke-writer 1 op)
+  (send-raw eyre-id status.res body.res)
+::  +serve-decisions: OpenRouter's decisions route, gated and charged
+::  like the proxy. The model must be the decision tier this vendor
+::  suggests, which no chat catalog lists, so the route is no way to
+::  reach any other model. It goes to the lease provider, else an
+::  OpenRouter provider, and is charged the cost OpenRouter reports at
+::  the markup; an answer that reports none is refused, not given free.
+::
+++  serve-decisions
+  |=  [eyre-id=@ta act=actor jon=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?:  owner.act  (send-err eyre-id 403 'an inference key is required')
+  ?.  ?=([%o *] jon)  (send-err eyre-id 400 'a JSON object is required')
+  ;<  sug=json  bind:m  (read-json (rf 1 / %'suggested.json'))
+  =/  model=@t  (gs:arm (gj:arm sug 'tiers') 'decision')
+  ?:  =('' model)  (send-err eyre-id 404 'decisions: not offered')
+  ?.  =(model (gs:arm jon 'model'))
+    (send-err eyre-id 404 (rap 3 'model: decisions are offered on ' model ' only' ~))
+  ;<  s=settings:arm  bind:m  (settings-of 1)
+  ;<  pm=(map @t provider:arm)  bind:m  (providers-of 1)
+  =/  routers=(list provider:arm)
+    (skim ~(val by pm) |=(p=provider:arm ?=(%openrouter kind.p)))
+  =/  lp=(unit provider:arm)  (~(get by pm) lease-provider.s)
+  =/  p=(unit provider:arm)
+    ?:  &(?=(^ lp) ?=(%openrouter kind.u.lp))  lp
+    ?~(routers ~ `i.routers)
+  ?~  p  (send-err eyre-id 404 'decisions: not offered')
+  ;<  our=@p  bind:m  get-our:io
+  =/  free=?  &(own-free.s =(ship.act our))
+  ;<  a=(unit account:arm)  bind:m  (live-account-at 1 ship.act)
+  ?~  a  (send-err eyre-id 403 'forbidden')
+  ?:  &(!free |(!(syn:si balance.u.a) =(--0 balance.u.a)))
+    (send-err eyre-id 402 'balance: empty')
+  ;<  res=[status=@ud body=@t]  bind:m
+    (post-json (decisions-url:arm base-url.u.p) api-key.u.p jon ~m2)
+  ?:  =(0 status.res)
+    (send-err eyre-id 504 (rap 3 'no answer from ' name.u.p ' within two minutes' ~))
+  ?.  (two-xx status.res)
+    =/  parsed=(unit json)  (de:json:html body.res)
+    ?^  parsed  (send-raw eyre-id status.res body.res)
+    (send-err eyre-id status.res (rap 3 name.u.p ' answered ' (crip (a-co:co status.res)) ~))
+  ?:  free  (send-raw eyre-id status.res body.res)
+  =/  cost=(unit @ud)  (read-cost:aopen body.res)
+  ?~  cost  (send-err eyre-id 502 (rap 3 name.u.p ' reported no cost for the decision' ~))
+  =/  answer=json  (fall (de:json:html body.res) ~)
+  ;<  ~  bind:m
+    %+  poke-writer  1
+    %-  pairs:enjs:format
+    :~  ['op' s+'debit']
+        ['ship' s+(scot %p ship.act)]
+        ['amount' (numb:enjs:format (debit-for:aopen u.cost 0 markup.s))]
+        ['cost' (numb:enjs:format u.cost)]
+        ['model' s+model]
+        ['in' (numb:enjs:format (whole-of:aopen (gj:arm (gj:arm answer 'usage') 'input_tokens')))]
+        ['out' (numb:enjs:format 0)]
+        ['mode' s+'proxy']
+        ['ref' s+(gs:arm answer 'id')]
+    ==
   (send-raw eyre-id status.res body.res)
 ::  ==  Talon's routes, on the customer ship
 ::
@@ -5438,6 +5520,17 @@
   ;<  vw=(unit view:nexus)  bind:m  (peek-remote-wait u.vendor road)
   ?.  ?=([~ %file *] vw)  (pure:m ~)
   (pure:m (sang-json sang.u.vw))
+::  +free-here: this ship is its own vendor and own_free is on, so its
+::  own calls cost nothing and an app should not wait on a balance
+::
+++  free-here
+  |=  up=@ud
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  s=settings:arm  bind:m  (settings-of up)
+  ;<  our=@p  bind:m  get-our:io
+  ;<  vendor=(unit @p)  bind:m  (vendor-of up)
+  (pure:m &(own-free.s =(`our vendor)))
 ::  +serve-inference: the whole of Talon's integration. The newest key
 ::  this ship holds, the vendor's proxy base and what it sells.
 ::
@@ -5452,9 +5545,10 @@
   =/  leased=@t  (gs:arm lj 'key')
   ;<  doc=json  bind:m  (read-json (rf 1 / %'view.json'))
   ;<  held=(list held-key:arm)  bind:m  (held-keys 1)
+  ;<  free=?  bind:m  (free-here 1)
   ?:  &(!=('' leased) !(gb:arm lj 'disabled'))
     %^  send-json  eyre-id  200
-    %^  with-suggested  doc  held
+    %^  with-suggested  [doc free]  held
     %-  inference-json:arm
     :*  'lease'
         (gs:arm lj 'base_url')
@@ -5478,19 +5572,20 @@
     ?:  (lien (strings:arm (ga:arm j 'tags')) |=(t=@t =('transcription' t)))  ~
     `(gs:arm j 'id')
   =/  key=@t  (rap 3 id.newest '.' secret.newest ~)
-  (send-json eyre-id 200 (with-suggested doc held (inference-json:arm 'proxy' base key models)))
+  (send-json eyre-id 200 (with-suggested [doc free] held (inference-json:arm 'proxy' base key models)))
 ::  +with-suggested: an inference answer with the vendor's suggested
 ::  models from the view (rev 0 and nothing before any arrive) and where
 ::  to search: the vendor's Brave proxy with this ship's newest armillary
-::  key, which a lease does not replace
+::  key, which a lease does not replace. free says this ship's own calls
+::  cost nothing (+free-here), so an app does not gate on a balance.
 ::
 ++  with-suggested
-  |=  [doc=json held=(list held-key:arm) inf=json]
+  |=  [[doc=json free=?] held=(list held-key:arm) inf=json]
   ^-  json
   ?.  ?=([%o *] inf)  inf
   =/  sug=json  (gj:arm doc 'suggested')
   =?  sug  !?=([%o *] (gj:arm sug 'tiers'))  (en-suggestion:arm (gn:arm sug 'rev') [~ ~])
-  [%o (~(gas by p.inf) ~[['suggested' sug] ['search' (search-of doc held)]])]
+  [%o (~(gas by p.inf) ~[['suggested' sug] ['search' (search-of doc held)] ['free' b+free]])]
 ::  +search-of: the vendor's Brave proxy and the key an app sends it, or
 ::  an empty object while this ship holds no armillary key or the vendor
 ::  has no Brave key
