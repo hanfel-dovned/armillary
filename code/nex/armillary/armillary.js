@@ -102,11 +102,15 @@
     ['zdr', 'ZDR (keeps no data)'],
     ['private', 'Private'],
   ];
+  // the same names as the lib's +feature-names, which render-check.js
+  // holds this list to. Left at none, a feature takes the frontier model,
+  // except orrery_browsing, which takes the zdr model, and dictation,
+  // which Talon runs on the customer's assistant model
   var FEATURES = [
     ['catch_up', 'Talon catch-up'],
     ['assistant', 'Talon assistant'],
     ['decision', 'Talon decision gate'],
-    ['dictation', 'Talon dictation'],
+    ['dictation', "Talon dictation (none: the assistant's model)"],
     ['orrery_generator', 'Orrery generator, refine and brief'],
     ['orrery_mail', 'Orrery mail reader'],
     ['orrery_chat', 'Orrery chat reader'],
