@@ -10,7 +10,7 @@ the same ship url, 3401 by default. It starts nothing: the runner
 starts all three stubs first. Exits 1 on any failure. Safe to rerun: it
 deletes the account, the provider and the plans it made, both before it
 starts and after it finishes."""
-import hashlib, hmac, json, subprocess, sys, time
+import base64, hashlib, hmac, json, os, subprocess, sys, time
 
 HOST, JAR, PORT = sys.argv[1], sys.argv[2], sys.argv[3]
 SPORT = sys.argv[4] if len(sys.argv) > 4 else '3400'
@@ -254,8 +254,9 @@ check('the provider still answers after a blank-key edit', code == 200 and dicti
 
 print('import')
 code, d = curl('POST', API + '/providers/stub/import')
-check('the first import adds 3', code == 200 and dictish(d).get('added') == 3, (code, d))
+check('the first import adds 4, the transcription list\'s model among them', code == 200 and dictish(d).get('added') == 4, (code, d))
 check('and says how many rows OpenRouter\'s ZDR list tagged', dictish(d).get('zdr') == 1, d)
+check('and how many are speech to text', dictish(d).get('transcription') == 1, d)
 settle()
 code, d = curl('POST', API + '/providers/stub/import')
 check('a second import adds 0', code == 200 and dictish(d).get('added') == 0, (code, d))
@@ -263,7 +264,7 @@ settle()
 
 print('catalog')
 code, cat = curl('GET', API + '/catalog')
-check('GET /api/catalog answers the rows', code == 200 and isinstance(cat, list) and len(cat) == 3, (code, cat))
+check('GET /api/catalog answers the rows', code == 200 and isinstance(cat, list) and len(cat) == 4, (code, cat))
 cat = cat if isinstance(cat, list) else []
 byid = {r['id']: r for r in cat}
 check('an imported row carries the cost and the marked up price',
@@ -274,12 +275,16 @@ check('a model with a ZDR endpoint is tagged zdr, one without is not',
       'zdr' in (dictish(byid.get('stub/alpha')).get('tags') or []) and 'zdr' not in (dictish(byid.get('stub/free')).get('tags') or []),
       (byid.get('stub/alpha'), byid.get('stub/free')))
 check('every imported row is disabled', all(r.get('enabled') is False for r in cat), cat)
+check('the transcription list\'s model is tagged transcription, a chat model is not',
+      'transcription' in (dictish(byid.get('stub/whisper')).get('tags') or [])
+      and 'transcription' not in (dictish(byid.get('stub/alpha')).get('tags') or []),
+      (byid.get('stub/whisper'), byid.get('stub/alpha')))
 bad = cat + [{'id': 'other/one', 'provider': 'nope', 'in': 1, 'out': 1}]
 code, d = curl('PUT', API + '/catalog', bad)
-check('a row on an unknown provider is 400 naming the row', code == 400 and 'row 3 provider: unknown' in err_of(d), (code, d))
+check('a row on an unknown provider is 400 naming the row', code == 400 and 'row 4 provider: unknown' in err_of(d), (code, d))
 dupe = cat + [{'id': 'stub/alpha', 'provider': 'stub', 'in': 1, 'out': 1}]
 code, d = curl('PUT', API + '/catalog', dupe)
-check('a duplicate id is 400 naming the row', code == 400 and 'row 3 id: duplicate' in err_of(d), (code, d))
+check('a duplicate id is 400 naming the row', code == 400 and 'row 4 id: duplicate' in err_of(d), (code, d))
 for row in cat:
     if row['id'] in ('stub/alpha', 'stub/beta'):
         row['enabled'] = True
@@ -396,6 +401,71 @@ settle(2)
 rows = ledger()
 emb = [r for r in rows if r.get('kind') == 'debit' and r.get('out') == 0]
 check('an embedding charges input only', len(emb) == 1 and emb[0].get('amount') == 36, emb)
+
+print('transcription')
+def post_file(url, body, bearer):
+    """a POST whose body is too big for one argument, through a file"""
+    path = '/tmp/api-matrix-body.json'
+    with open(path, 'w') as f:
+        json.dump(body, f)
+    out = subprocess.run(['curl', '-s', '-m', '180', '-X', 'POST', '-w', '\n%{http_code}', url,
+                          '-H', 'authorization: Bearer ' + bearer, '-H', 'content-type: application/json',
+                          '--data-binary', '@' + path], capture_output=True, text=True).stdout
+    os.remove(path)
+    text, _, code = out.rpartition('\n')
+    try:
+        return int(code or 0), json.loads(text) if text else None
+    except json.JSONDecodeError:
+        return int(code or 0), text
+speech = lambda n: {'model': 'stub/whisper', 'input_audio': {'data': base64.b64encode(b'\0' * n).decode(), 'format': 'wav'}}
+for row in cat:
+    if row['id'] == 'stub/whisper':
+        row['enabled'] = True
+code, d = curl('PUT', API + '/catalog', cat)
+check('the transcription model is enabled', code == 200, (code, d))
+settle()
+code, sug0 = curl('GET', API + '/suggested')
+code, d = curl('PUT', API + '/suggested', {'tiers': {'frontier': 'stub/alpha', 'transcription': 'stub/whisper'}, 'features': {}})
+check('the transcription tier takes the speech to text model', code == 200, (code, d))
+code, d = curl('GET', API + '/suggested')
+check('and it rides in models beside default',
+      dictish(dictish(d).get('models')).get('transcription') == 'stub/whisper'
+      and dictish(dictish(d).get('models')).get('default') == 'stub/alpha', d)
+code, d = curl('PUT', API + '/suggested', {'tiers': {'frontier': 'stub/alpha', 'transcription': 'stub/whisper'},
+                                            'features': {'assistant': 'transcription'}})
+check('a feature on the transcription tier is 400', code == 400 and 'speech to text' in err_of(d), (code, d))
+before = len(ledger())
+body = speech(3000)
+code, d = curl('POST', V1 + '/audio/transcriptions', body, jar=None, bearer=SEC1)
+check('a transcription answers 200 with the text', code == 200 and str(dictish(d).get('text', '')).startswith('ok: heard'), (code, d))
+settle(2)
+rows = ledger()
+stt = [r for r in rows if r.get('kind') == 'debit' and r.get('model') == 'stub/whisper']
+check('it is charged at the cost OpenRouter reported, marked up and rounded up',
+      len(rows) == before + 1 and len(stt) == 1 and stt[0].get('amount') == 661 and stt[0].get('cost') == 508, (before, stt))
+check('and the ledger keeps its token counts', dictish(stt[0] if stt else {}).get('in') == 83 and dictish(stt[0] if stt else {}).get('out') == 30, stt)
+code, seen = curl('GET', STUB + '/stub/requests', jar=None)
+last = dictish(dictish(seen).get('last'))
+check('the upstream got the model and the audio whole',
+      last.get('model') == 'stub/whisper' and last.get('format') == 'wav' and last.get('bytes') == len(body['input_audio']['data']), last)
+code, d = curl('POST', V1 + '/chat/completions', {'model': 'stub/whisper', 'messages': message('hi')}, jar=None, bearer=SEC1)
+check('a transcription model on the chat route is 400', code == 400 and '/v1/audio/transcriptions' in err_of(d), (code, d))
+code, d = curl('POST', V1 + '/audio/transcriptions', dict(body, model='stub/alpha'), jar=None, bearer=SEC1)
+check('a chat model on the transcription route is 400', code == 400 and 'not a transcription model' in err_of(d), (code, d))
+code, d = curl('POST', V1 + '/audio/transcriptions', body, jar=None)
+check('a transcription with no key is 403', code == 403, (code, d))
+big = speech(3600000)
+code, d = post_file(V1 + '/audio/transcriptions', big, SEC1)
+check('a transcription of over 4 MB is taken', code == 200, (code, str(d)[:120]))
+code, d = post_file(V1 + '/chat/completions', {'model': 'stub/alpha', 'messages': message('x' * 4300000)}, SEC1)
+check('a chat body of over 4 MB is still 413', code == 413 and '4 MB' in err_of(d), (code, str(d)[:120]))
+settle()
+curl('PUT', API + '/suggested', {'tiers': dictish(sug0).get('tiers') or {}, 'features': dictish(sug0).get('features') or {}})
+for row in cat:
+    if row['id'] == 'stub/whisper':
+        row['enabled'] = False
+curl('PUT', API + '/catalog', cat)
+settle()
 
 print('revocation and close')
 code, d = curl('DELETE', API + '/accounts/' + SHIP + '/keys/' + dictish(k1).get('id'))

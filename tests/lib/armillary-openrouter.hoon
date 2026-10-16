@@ -183,4 +183,15 @@
     (expect-eq !>(`@ud`100.000) !>((limit-for:ao 100.000 -5.000 130)))
     (expect-eq !>(`@ud`100.000) !>((limit-for:ao 100.000 --0 130)))
   ==
+::  a transcription's usage as OpenRouter reports it: the cost in
+::  microdollars and the token counts, or nothing when no cost came back
+::
+++  test-read-stt-usage
+  =/  ok=@t  '{"text":"hi","usage":{"seconds":9.2,"total_tokens":113,"input_tokens":83,"output_tokens":30,"cost":0.000508}}'
+  ;:  weld
+    (expect-eq !>(`(unit [cost=@ud in=@ud out=@ud])``[508 83 30]) !>((read-stt-usage:ao ok)))
+    (expect-eq !>(`(unit [cost=@ud in=@ud out=@ud])`~) !>((read-stt-usage:ao '{"text":"hi","usage":{"seconds":3}}')))
+    (expect-eq !>(`(unit [cost=@ud in=@ud out=@ud])``[2.000 0 0]) !>((read-stt-usage:ao '{"usage":{"cost":0.002}}')))
+    (expect-eq !>(`(unit [cost=@ud in=@ud out=@ud])`~) !>((read-stt-usage:ao 'not json')))
+  ==
 --

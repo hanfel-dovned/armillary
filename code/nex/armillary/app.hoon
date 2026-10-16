@@ -1607,7 +1607,7 @@
   ;<  cat=(list model-row:arm)  bind:m  (catalog-of 0)
   =/  mine=(list model-row:arm)
     %+  skim  cat
-    |=(r=model-row:arm &(enabled.r =(provider.u.held provider.r)))
+    |=(r=model-row:arm &(enabled.r =(provider.u.held provider.r) !(is-transcription:arm r)))
   (pure:m (en-lease-view:arm u.held base (turn mine |=(r=model-row:arm id.r))))
 ::  +do-set-pending: a minted key waiting for its ship to fetch it. The
 ::  secret lives in pending.json and in the view, and nowhere else.
@@ -3746,8 +3746,10 @@
     suffix0
   =/  meth=@t  method.request.req
   =/  size=@ud  ?~(body.request.req 0 p.u.body.request.req)
-  ?:  (gth size max-body:arm)
-    (send-err eyre-id 413 'body: over 4 MB')
+  ::  a transcription carries its audio in base64, so its cap is higher
+  =/  audio=?  &(=('POST' meth) ?=([%v1 %audio %transcriptions ~] suffix))
+  ?:  (gth size ?:(audio max-audio:arm max-body:arm))
+    (send-err eyre-id 413 ?:(audio 'body: over 16 MB' 'body: over 4 MB'))
   ::  a body is read as JSON, so a request carrying one says it is JSON
   =/  ctype=@t
     =/  raw=tape
@@ -3791,6 +3793,7 @@
     (serve-proxy eyre-id act jon %chat)
   ?:  &(=('POST' meth) ?=([%v1 %embeddings ~] suffix))
     (serve-proxy eyre-id act jon %embeddings)
+  ?:  audio  (serve-proxy eyre-id act jon %transcription)
   ::  Brave search on the vendor's key
   ?:  &(=('GET' meth) ?=([%brave *] suffix))
     (serve-brave eyre-id act (turn t.suffix |=(a=@ta `@t`a)) args)
@@ -4060,8 +4063,19 @@
     (send-err eyre-id 502 (cat 3 'the provider answered ' (crip (a-co:co status.res))))
   =/  listing=json  (fall (de:json:html body.res) ~)
   =/  fresh=(list model-row:arm)  (import-rows:arm `@t`id pct listing)
+  ::  OpenRouter's default listing leaves its speech to text models out;
+  ::  they come from a second one and are tagged transcription. No
+  ::  answer adds none.
+  ;<  sres=[status=@ud body=@t]  bind:m
+    ?.  ?=(%openrouter kind.u.p)  (pure:(fiber:fiber:nexus ,[status=@ud body=@t]) [0 ''])
+    (get-json (join-url base-url.u.p '/models?output_modalities=transcription') api-key.u.p)
+  =/  spoken=(list model-row:arm)
+    ?.  &((gte status.sres 200) (lth status.sres 300))  ~
+    (import-rows:arm `@t`id pct (fall (de:json:html body.sres) ~))
   ;<  cat=(list model-row:arm)  bind:m  (catalog-of 1)
-  =/  merged=(list model-row:arm)  (merge-import:arm cat fresh)
+  =/  merged=(list model-row:arm)  (merge-import:arm cat (weld fresh spoken))
+  =.  merged
+    (with-transcription:arm merged `@t`id (sy (turn spoken |=(r=model-row:arm upstream.r))))
   =/  added=@ud  (sub (lent merged) (lent cat))
   ::  OpenRouter says which models have an endpoint that keeps nothing;
   ::  its rows are tagged zdr by that list. No answer leaves the tags.
@@ -4075,8 +4089,13 @@
     (pairs:enjs:format ~[['op' s+'set-catalog'] ['catalog' (en-catalog:arm merged)]])
   ;<  ~  bind:m  (poke-writer 1 op)
   =/  tagged=@ud  (lent (skim merged |=(r=model-row:arm (lien tags.r |=(t=@t =('zdr' t))))))
+  =/  speech=@ud  (lent (skim merged is-transcription:arm))
   %^  send-json  eyre-id  200
-  (pairs:enjs:format ~[['added' (numb:enjs:format added)] ['zdr' (numb:enjs:format tagged)]])
+  %-  pairs:enjs:format
+  :~  ['added' (numb:enjs:format added)]
+      ['zdr' (numb:enjs:format tagged)]
+      ['transcription' (numb:enjs:format speech)]
+  ==
 ::  ==  the catalog
 ::
 ::  +serve-catalog: our own catalog when this ship is nobody's customer
@@ -4848,7 +4867,7 @@
 ::  refused here on purpose: the page must not double as a free client.
 ::
 ++  serve-proxy
-  |=  [eyre-id=@ta act=actor jon=json kind=?(%chat %embeddings)]
+  |=  [eyre-id=@ta act=actor jon=json kind=?(%chat %embeddings %transcription)]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ?:  owner.act  (send-err eyre-id 403 'an inference key is required')
@@ -4857,9 +4876,20 @@
   ;<  cat=(list model-row:arm)  bind:m  (catalog-of 1)
   =/  row=(unit model-row:arm)  (find-model:arm cat want)
   ?~  row  (send-err eyre-id 404 'model: not offered')
+  =/  stt=?  ?=(%transcription kind)
+  ?:  &(stt !(is-transcription:arm u.row))
+    (send-err eyre-id 400 'model: not a transcription model')
+  ?:  &(!stt (is-transcription:arm u.row))
+    (send-err eyre-id 400 'model: a transcription model; send it to /v1/audio/transcriptions')
   ;<  pm=(map @t provider:arm)  bind:m  (providers-of 1)
   =/  p=(unit provider:arm)  (~(get by pm) provider.u.row)
   ?~  p  (send-err eyre-id 404 'model: not offered')
+  ::  a transcription is charged at the cost OpenRouter reports, since
+  ::  its price may be per second or per token. ponytail: OpenRouter
+  ::  only; another provider reports no cost, and needs a per second
+  ::  price in the catalog first
+  ?:  &(stt !?=(%openrouter kind.u.p))
+    (send-err eyre-id 400 'model: transcription is served through an OpenRouter provider only')
   ;<  a=(unit account:arm)  bind:m  (live-account-at 1 ship.act)
   ?~  a  (send-err eyre-id 403 'forbidden')
   ?.  (syn:si balance.u.a)  (send-err eyre-id 402 'balance: empty')
@@ -4867,7 +4897,12 @@
   ?:  (is-stream:arm jon)
     (send-err eyre-id 400 'stream: not supported on the proxy; take a lease')
   =/  body=json  (swap-model:arm jon upstream.u.row)
-  =/  leaf=@t  ?:(?=(%chat kind) '/chat/completions' '/embeddings')
+  =/  leaf=@t
+    ?-  kind
+      %chat           '/chat/completions'
+      %embeddings     '/embeddings'
+      %transcription  '/audio/transcriptions'
+    ==
   ;<  res=[status=@ud body=@t]  bind:m
     (post-json (join-url base-url.u.p leaf) api-key.u.p body)
   ?:  =(0 status.res)
@@ -4893,17 +4928,26 @@
   =/  out-charge=@ud  ?:(?=(%chat kind) (charge:arm out.toks out.u.row) 0)
   =/  in-cost=@ud   (charge:arm in.toks cost-in.u.row)
   =/  out-cost=@ud  ?:(?=(%chat kind) (charge:arm out.toks cost-out.u.row) 0)
+  ::  a transcription: what OpenRouter says it cost, at the markup, the
+  ::  way a lease's spending is charged
+  ;<  s=settings:arm  bind:m  (settings-of 1)
+  =/  spoke=(unit [cost=@ud in=@ud out=@ud])
+    ?.(stt ~ (read-stt-usage:aopen body.res))
+  =/  bill=[amount=@ud cost=@ud in=@ud out=@ud]
+    ?~  spoke
+      [(add in-charge out-charge) (add in-cost out-cost) in.toks ?:(?=(%chat kind) out.toks 0)]
+    [(debit-for:aopen cost.u.spoke 0 markup.s) cost.u.spoke in.u.spoke out.u.spoke]
   =/  answer=json  (fall (de:json:html body.res) ~)
   =/  mode=@t  'proxy'
   =/  op=json
     %-  pairs:enjs:format
     :~  ['op' s+'debit']
         ['ship' s+(scot %p ship.act)]
-        ['amount' (numb:enjs:format (add in-charge out-charge))]
-        ['cost' (numb:enjs:format (add in-cost out-cost))]
+        ['amount' (numb:enjs:format amount.bill)]
+        ['cost' (numb:enjs:format cost.bill)]
         ['model' s+id.u.row]
-        ['in' (numb:enjs:format in.toks)]
-        ['out' (numb:enjs:format ?:(?=(%chat kind) out.toks 0))]
+        ['in' (numb:enjs:format in.bill)]
+        ['out' (numb:enjs:format out.bill)]
         ['mode' s+mode]
         ['ref' s+(gs:arm answer 'id')]
     ==
@@ -5361,9 +5405,15 @@
     ?:((gth made.k made.best) k best)
   =/  base=@t  (rap 3 (public-url-of doc) '/apps/armillary/v1' ~)
   ;<  cat=(unit json)  bind:m  (vendor-catalog 1)
+  ::  a transcription model is no chat model, so a client is not
+  ::  offered it as one
   =/  models=(list @t)
     ?.  ?=([~ %a *] cat)  ~
-    (turn p.u.cat |=(j=json ^-(@t (gs:arm j 'id'))))
+    %+  murn  p.u.cat
+    |=  j=json
+    ^-  (unit @t)
+    ?:  (lien (strings:arm (ga:arm j 'tags')) |=(t=@t =('transcription' t)))  ~
+    `(gs:arm j 'id')
   =/  key=@t  (rap 3 id.newest '.' secret.newest ~)
   (send-json eyre-id 200 (with-suggested doc held (inference-json:arm 'proxy' base key models)))
 ::  +with-suggested: an inference answer with the vendor's suggested

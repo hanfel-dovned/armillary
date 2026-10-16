@@ -235,6 +235,25 @@
       (fall (micro-of (gj d 'limit')) 0)
       (gb d 'disabled')
   ==
+::  +read-stt-usage: what a transcription cost, as OpenRouter reports it
+::  under usage: cost in USD, which the proxy charges at its markup,
+::  since a transcription model's price may be per second or per token;
+::  and the token counts the ledger keeps. ~ when no cost came back.
+::
+++  read-stt-usage
+  |=  body=@t
+  ^-  (unit [cost=@ud in=@ud out=@ud])
+  =/  u=json  (gj (de-body body) 'usage')
+  =/  cost=(unit @ud)  (micro-of (gj u 'cost'))
+  ?~  cost  ~
+  `[u.cost (whole-of (gj u 'input_tokens')) (whole-of (gj u 'output_tokens'))]
+::  +whole-of: a JSON whole number, 0 when it is anything else
+::
+++  whole-of
+  |=  j=json
+  ^-  @ud
+  ?.  ?=([%n *] j)  0
+  (fall (de-dec `@t`p.j 0) 0)
 ::  ==  the two sums a lease turns on
 ::
 ::  +debit-for: what the customer owes for spending we have not
