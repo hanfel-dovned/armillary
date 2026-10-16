@@ -5,7 +5,7 @@ Everything a customer ship does that is not inference is a JSON op poked from it
 ## How it works
 
 - `PUT /apps/armillary/api/vendor` with `{"ship": "~wex"}` on the customer ship records the vendor in `vendor.json` and queues a `hello`. `{"ship": ""}` clears it and the client fiber goes back to sleep.
-- The client fiber at `/client.sig` sends every op in `client.json` that is not yet sent, waits two seconds, peeks the view, and stores it. It does that again every five minutes and whenever a request fiber prods it.
+- The client fiber at `/client.sig` sends every op in `client.json` that is not yet sent, waits two seconds, peeks the view, and stores it. Only then does it take the sends' acks, so the answer never waits behind a round trip that only says an op landed. It does that again every five minutes and whenever a request fiber prods it. Each prod is stamped with when it was sent, and one sent before the last pass began is skipped, since that pass already did what it asked.
 - On the vendor, `/inbox.sig` is registered on the `/public` usergroup, so any ship may poke it. The source ship of the poke is the account: no op names a ship, and the inbox never trusts one that did. A ship with no account gets one on its first op.
 - The vendor's writer rewrites `/accounts/<ship>/view.json` whole at the end of every op that touches that account, so the view is never stale. The grant is a usergroup named for the ship, `armillary-<name>.grp` under `/sys/ames/usergroups`, holding that one ship with peek on that one file. Nothing about one account is readable by another ship.
 - `catalog-public.json` and `plans.json` are granted to `/public`, so a customer can read what the vendor sells before it has an account.
@@ -53,7 +53,7 @@ A later `hello` from the same ship opens a fresh, empty account as usual.
 
 ## The timeout rule
 
-A remote poke's ack is unobservable in grubbery, so a timeout is unknown, not failure. `remote-poke-wait` gives up after thirty seconds and answers yes: the poke usually landed, and the view is what settles it. A peek gives up after thirty seconds and answers nothing, which leaves whatever the customer already knew in place. Nothing in the client fiber treats silence as an error.
+A remote poke's ack can go unseen in grubbery, so a timeout is unknown, not failure. A send gives up on its ack after thirty seconds and answers yes: the poke usually landed, and the view is what settles it. A refused send stays queued, and the next pass sends it again. A peek gives up after thirty seconds and answers nothing, which leaves whatever the customer already knew in place. Nothing in the client fiber treats silence as an error.
 
 The routes that wait do so for thirty seconds and then answer 202 with the nonce rather than an error: `POST /api/keys` and `POST /api/checkout`. The op is still queued and the next pass will land it. The page sends its checkout with `"wait": false`, which answers 202 at once, then reads `GET /api/checkout/<nonce>` until the vendor answers and says each step as it goes.
 

@@ -579,6 +579,16 @@
   |=  [target=@p =lane:tarball jon=json]
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
+  ;<  ws=[w=wire tw=wire]  bind:m  (remote-poke-fire target lane jon)
+  (remote-poke-await ws)
+::  +remote-poke-fire: the poke sent and its thirty seconds started,
+::  with the wires +remote-poke-await takes its answer on. Every wait in
+::  between leaves that answer queued for it.
+::
+++  remote-poke-fire
+  |=  [target=@p =lane:tarball jon=json]
+  =/  m  (fiber:fiber:nexus ,[w=wire tw=wire])
+  ^-  form:m
   ;<  now=@da  bind:m  get-time:io
   ;<  tw=wire  bind:m  (nonce:io /remote)
   =/  req=load:remo:nexus  [[/inbox-poke lane] %poke [[/ %json] jon]]
@@ -587,6 +597,13 @@
     %-  send-dart:io
     [%node w &+&+[/sys/gall %'main.sig'] %poke [[/ %gall-poke] [[target %grubbery] grubbery-load+req]]]
   ;<  ~  bind:m  (set-timer:io tw (add now ~s30))
+  (pure:m [w tw])
+::  +remote-poke-await: the answer to a poke +remote-poke-fire sent
+::
+++  remote-poke-await
+  |=  [w=wire tw=wire]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
   ;<  ok=?  bind:m
     |=  input:fiber:nexus
     :+  ~  q.state
@@ -3246,6 +3263,7 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   |-
+  ;<  began=@da  bind:m  get-time:io
   ::  a delete op names its vendor itself: it is sent, and its answer
   ::  read, whether or not this ship still has a vendor
   ;<  queued=?  bind:m  client-deletes
@@ -3264,11 +3282,34 @@
   ;<  ~  bind:m  (client-pass u.vendor)
   ;<  now=@da  bind:m  get-time:io
   ;<  ~  bind:m  (set-timer:io /tick (add now ~m5))
-  ;<  *  bind:m  take-poke-from:io
+  ;<  ~  bind:m  (take-fresh-prod began)
   ;<  ~  bind:m  (cancel-timer:io /tick)
   $
+::  +take-fresh-prod: the next poke that asks for more than the pass
+::  that began at .began did. A prod sent before that pass began is
+::  answered by it, since the pass sent every op queued by then and
+::  read the view after. Without this, a waiting route's nudge every
+::  third second queued pass after pass behind a slow vendor, and a new
+::  op waited for the one in flight. Anything else, a timer or a prod
+::  with no stamp, is fresh.
+::
+++  take-fresh-prod
+  |=  began=@da
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  [* =sage:tarball]  bind:m  take-poke-from:io
+  =/  at=(unit @da)
+    ?.  =([/ %json] p.sage)  ~
+    =/  jon=(unit json)  (mole |.(!<(json q.sage)))
+    ?~  jon  ~
+    (slaw %da (gs:arm u.jon 'at'))
+  ?:  &(?=(^ at) (lth u.at began))  (take-fresh-prod began)
+  (pure:m ~)
 ::  +client-pass: one round with the vendor. Send every op not yet sent,
-::  then read the view once and take what it holds for us.
+::  read the view once and take what it holds for us, then take the
+::  sends' acks. The view goes first: an ack only says the op landed,
+::  and waiting for it put a whole round trip to the vendor in front of
+::  the answer.
 ::
 ++  client-pass
   |=  vendor=@p
@@ -3280,48 +3321,84 @@
   =/  todo=(list [nonce=@t row=json])
     %+  skim  ~(tap by om)
     |=([n=@t j=json] &(!(gb:arm j 'sent') =('' (gs:arm j 'vendor'))))
-  ;<  ~  bind:m  (send-queued vendor todo)
-  ::  the vendor's own writer runs only after our poke has landed, so a
-  ::  pass that sent something looks again a moment later rather than
-  ::  reading the account as it was before the op
+  ;<  sent=(list sending)  bind:m  (fire-queued vendor todo)
+  ::  the vendor's own writer runs only after our poke has landed and
+  ::  its rail has answered, so a pass that sent something looks a
+  ::  moment later rather than reading the account as it was before
+  ::  the op. ponytail: a fixed two seconds; a peek that still misses
+  ::  is followed by the next pass, which a waiting route prods
   ;<  ~  bind:m  ?~(todo (pure:(fiber:fiber:nexus ,~) ~) (nap ~s2))
   ;<  t0=@da  bind:m  get-time:io
   ;<  got=(unit json)  bind:m  (peek-view vendor)
   ;<  t1=@da  bind:m  get-time:io
-  ?~  got  (pure:m ~)
-  ::  how long the read itself took travels with the view, so a slow
-  ::  balance says whether the vendor or this ship is the slow half
-  =/  ms=@ud  (div (sub t1 t0) (div ~s1 1.000))
-  =/  doc=json
-    ?.  ?=([%o *] u.got)  u.got
-    [%o (~(put by p.u.got) 'fetch_ms' (en-num:arm ms))]
-  (absorb-view vendor doc)
-::  +send-queued: the ops waiting, one at a time. A remote ack is
-::  unobservable, so a timeout answers yes and the view is the truth.
+  ;<  ~  bind:m
+    ?~  got  (pure:(fiber:fiber:nexus ,~) ~)
+    ::  how long the read itself took travels with the view, so a slow
+    ::  balance says whether the vendor or this ship is the slow half
+    =/  ms=@ud  (div (sub t1 t0) (div ~s1 1.000))
+    =/  doc=json
+      ?.  ?=([%o *] u.got)  u.got
+      [%o (~(put by p.u.got) 'fetch_ms' (en-num:arm ms))]
+    (absorb-view vendor doc)
+  (settle-sent sent)
+::  +sending: an op fired this pass, and the wires its ack comes back
+::  on; ~ when our own inbox took it directly
 ::
-++  send-queued
++$  sending  [nonce=@t pay=json row=json wires=(unit [w=wire tw=wire])]
+::  +fire-queued: every op waiting, sent without waiting for its ack
+::
+++  fire-queued
   |=  [vendor=@p todo=(list [nonce=@t row=json])]
-  =/  m  (fiber:fiber:nexus ,~)
+  =/  m  (fiber:fiber:nexus ,(list sending))
   ^-  form:m
   ?~  todo  (pure:m ~)
-  =/  n=@t  nonce.i.todo
   =/  pay=json  (gj:arm row.i.todo 'payload')
-  ;<  ok=?  bind:m  (send-op vendor pay)
+  ;<  our=@p  bind:m  get-our:io
+  ;<  wires=(unit [w=wire tw=wire])  bind:m
+    =/  n  (fiber:fiber:nexus ,(unit [w=wire tw=wire]))
+    ::  our own ship is poked directly, since a ship cannot ames itself
+    ?:  =(vendor our)
+      ;<  *  bind:n  (poke-soft:io (rf 0 / %'inbox.sig') [[/ %json] pay])
+      (pure:n ~)
+    ;<  ws=[w=wire tw=wire]  bind:n
+      (remote-poke-fire vendor [%& armillary-instance:arm %'inbox.sig'] pay)
+    (pure:n `ws)
+  ;<  rest=(list sending)  bind:m  (fire-queued vendor t.todo)
+  (pure:m [[nonce.i.todo pay row.i.todo wires] rest])
+::  +settle-sent: each op fired this pass, once its ack or its thirty
+::  seconds are in. A timeout answers yes, since grubbery's remote acks
+::  can go unseen and a poke that timed out usually landed; the view is
+::  the truth. A refused op stays unsent, so the next pass sends it
+::  again. A taken op is marked sent, unless the view already showed it
+::  and +absorb-view dropped it; one with no nonce of its own can never
+::  show in the view, so it is dropped.
+::
+++  settle-sent
+  |=  sent=(list sending)
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  sent  (pure:m ~)
+  =/  f=sending  i.sent
+  ;<  ok=?  bind:m
+    ?~  wires.f  (pure:(fiber:fiber:nexus ,?) &)
+    (remote-poke-await u.wires.f)
   ;<  ~  bind:m
-    ?.  ok  (pure:(fiber:fiber:nexus ,~) ~)
-    ::  an op with no nonce of its own can never show in the view, so a
-    ::  send that was taken is the end of it; the rest waits to be seen
-    ?:  =('' (gs:arm pay 'nonce'))
-      (poke-writer 0 (pairs:enjs:format ~[['op' s+'drop-op'] ['nonce' s+n]]))
+    =/  n  (fiber:fiber:nexus ,~)
+    ?.  ok  (pure:n ~)
+    ?:  =('' (gs:arm pay.f 'nonce'))
+      (poke-writer 0 (pairs:enjs:format ~[['op' s+'drop-op'] ['nonce' s+nonce.f]]))
+    ;<  cj=json  bind:n  (read-json (rf 0 / %'client.json'))
+    =/  held=json  (gj:arm (gj:arm cj 'ops') nonce.f)
+    ?.  ?=([%o *] held)  (pure:n ~)
     %+  poke-writer  0
     %-  pairs:enjs:format
     :~  ['op' s+'note-op']
-        ['nonce' s+n]
-        ['payload' pay]
+        ['nonce' s+nonce.f]
+        ['payload' pay.f]
         ['sent' b+&]
-        ['vendor' (gj:arm row.i.todo 'vendor')]
+        ['vendor' (gj:arm row.f 'vendor')]
     ==
-  (send-queued vendor t.todo)
+  (settle-sent t.sent)
 ::  +client-deletes: the delete ops queued, each to the vendor it names.
 ::  One not yet answered is sent again and its tombstone peeked, on
 ::  every wake: a poke's ack is unobservable, the vendor deletes an
@@ -4869,13 +4946,17 @@
 ::  send is already in client.json. The ack is never taken: a client
 ::  busy on a vendor that does not answer holds the poke for up to
 ::  thirty seconds, and a route counting down must not wait behind it.
+::  The stamp lets the client skip a prod a later pass already
+::  answered (+take-fresh-prod).
 ::
 ++  prod-client
   |=  jon=json
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  wir=wire  bind:m  (nonce:io /prod)
-  (send-dart:io %node wir (rf 1 / %'client.sig') %poke [[/ %json] jon])
+  ;<  now=@da  bind:m  get-time:io
+  =/  doc=json  ?.(?=([%o *] jon) jon [%o (~(put by p.jon) 'at' s+(scot %da now))])
+  (send-dart:io %node wir (rf 1 / %'client.sig') %poke [[/ %json] doc])
 ::  +fresh-nonce: an op's idempotency key, from entropy
 ::
 ++  fresh-nonce
