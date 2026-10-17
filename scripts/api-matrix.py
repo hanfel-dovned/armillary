@@ -229,6 +229,9 @@ curl('PUT', API + '/settings', {'markup_pct': MARKUP, 'min_topup': 5000000, 'pub
                                 'mode': 'stub', 'refuse_comets': False})
 settle()
 
+code, d = curl('PUT', API + '/suggested', {'tiers': {'decision': 'typesafe/jev-1.13'}, 'features': {}})
+check('a decision tier with no OpenRouter provider and no chat model is 400', code == 400 and 'OpenRouter provider' in err_of(d), (code, d))
+
 print('providers')
 prov = {'id': 'stub', 'name': 'Stub', 'kind': 'openrouter',
         'base_url': STUB + '/v1', 'api_key': 'stub-key', 'provisioning_key': 'prov-key'}
@@ -279,6 +282,25 @@ check('the transcription list\'s model is tagged transcription, a chat model is 
       'transcription' in (dictish(byid.get('stub/whisper')).get('tags') or [])
       and 'transcription' not in (dictish(byid.get('stub/alpha')).get('tags') or []),
       (byid.get('stub/whisper'), byid.get('stub/alpha')))
+# a server that is not OpenRouter lists its whisper model among its
+# chat models and marks nothing, so the name tags it
+code, d = curl('POST', API + '/providers', {'id': 'box', 'name': 'Box', 'kind': 'openai-compatible',
+                                            'base_url': STUB + '/box/v1', 'api_key': 'stub-key'})
+settle()
+code, d = curl('POST', API + '/providers/box/import')
+check('another server\'s import says its whisper model is speech to text',
+      code == 200 and dictish(d).get('added') == 2 and dictish(d).get('transcription') == 2, (code, d))
+settle()
+code, boxed = curl('GET', API + '/catalog')
+bb = {r['id']: r for r in (boxed if isinstance(boxed, list) else [])}
+check('its whisper model is tagged transcription by name, its chat model is not',
+      'transcription' in (dictish(bb.get('whisper-1')).get('tags') or [])
+      and 'transcription' not in (dictish(bb.get('llama3.1:8b')).get('tags') or []),
+      (bb.get('whisper-1'), bb.get('llama3.1:8b')))
+curl('PUT', API + '/catalog', cat)
+settle()
+curl('DELETE', API + '/providers/box')
+settle()
 bad = cat + [{'id': 'other/one', 'provider': 'nope', 'in': 1, 'out': 1}]
 code, d = curl('PUT', API + '/catalog', bad)
 check('a row on an unknown provider is 400 naming the row', code == 400 and 'row 4 provider: unknown' in err_of(d), (code, d))
@@ -459,7 +481,62 @@ code, d = curl('POST', DEC, ask('typesafe/nocost'), jar=None, bearer=SEC1)
 settle(2)
 check('a decision that reports no cost is 502 and charges nothing',
       code == 502 and 'no cost' in err_of(d) and len(ledger()) == before, (code, d))
+# a chat model on a server that is not OpenRouter, asked for JSON
+code, d = curl('POST', API + '/providers', {'id': 'box', 'name': 'Box', 'kind': 'openai-compatible',
+                                            'base_url': STUB + '/v1', 'api_key': 'stub-key'})
+settle()
+deciders = [{'id': 'box/decider', 'provider': 'box', 'upstream': 'stub/decider', 'in': IN, 'out': OUT,
+             'cost_in': COST_IN, 'cost_out': COST_OUT, 'enabled': True},
+            {'id': 'box/badjson', 'provider': 'box', 'upstream': 'stub/badjson', 'in': IN, 'out': OUT,
+             'cost_in': COST_IN, 'cost_out': COST_OUT, 'enabled': True}]
+code, d = curl('PUT', API + '/catalog', cat + deciders)
+settle()
+code, d = curl('PUT', API + '/suggested', {'tiers': {'frontier': 'stub/alpha', 'decision': 'box/decider'}, 'features': {}})
+check('the decision tier may name a chat model the catalog sells', code == 200, (code, d))
+settle()
+chq = ask('box/decider')
+chq['questions']['kind'] = {'type': 'choice', 'instructions': 'circumstance or feeling?',
+                            'criteria': {'circumstance': 'a fact', 'feeling': 'a mood'}}
+before = len(ledger())
+code, d = curl('POST', DEC, chq, jar=None, bearer=SEC1)
+ans = dictish(dictish(d).get('answers'))
+check('a chat model answers the decision in the decisions API\'s shape',
+      code == 200 and ans.get('urgent') == {'noul': 0.8}
+      and dictish(ans.get('kind')).get('choice') == 'circumstance'
+      and dictish(dictish(ans.get('kind')).get('probabilities')).get('circumstance') == 0.9
+      and dictish(dictish(d).get('usage')).get('input_tokens') == 40, (code, d))
+code, seen = curl('GET', STUB + '/stub/requests', jar=None)
+last = dictish(dictish(seen).get('last'))
+msgs = last.get('messages') or [{}, {}]
+check('the server got one chat completion on the upstream model, and no provider rule it might refuse',
+      last.get('model') == 'stub/decider' and 'provider' not in last and 'usage' not in last
+      and last.get('temperature') == 0 and msgs[0].get('role') == 'system'
+      and 'urgent' in str(msgs[-1].get('content')), last)
+settle(2)
+rows = ledger()
+want = -(-40 * IN // 1000000) + -(-20 * OUT // 1000000)
+check('it is charged at the catalog\'s token prices',
+      len(rows) == before + 1 and rows[0].get('model') == 'box/decider' and rows[0].get('amount') == want
+      and rows[0].get('in') == 40 and rows[0].get('out') == 20, (want, rows[:1]))
+curl('PUT', API + '/suggested', {'tiers': {'frontier': 'stub/alpha', 'decision': 'box/badjson'}, 'features': {}})
+settle()
+before = len(ledger())
+code, d = curl('POST', DEC, ask('box/badjson'), jar=None, bearer=SEC1)
+settle(2)
+check('a chat model that answers in words is 502 and charges nothing',
+      code == 502 and 'no usable answer' in err_of(d) and len(ledger()) == before, (code, d))
+curl('PUT', API + '/suggested', {'tiers': {'frontier': 'stub/alpha', 'decision': 'box/decider'}, 'features': {}})
+settings(own_free=True)
+settle()
+before = len(ledger())
+code, d = curl('POST', DEC, ask('box/decider'), jar=None, bearer=SEC1)
+settle(2)
+check('with own_free the owner\'s own decision is free', code == 200 and len(ledger()) == before, (code, d))
+settings(own_free=False)
 curl('PUT', API + '/suggested', {'tiers': dictish(sug0).get('tiers') or {}, 'features': dictish(sug0).get('features') or {}})
+curl('PUT', API + '/catalog', cat)
+settle()
+curl('DELETE', API + '/providers/box')
 settle()
 
 print('embeddings')

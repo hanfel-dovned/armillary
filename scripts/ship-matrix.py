@@ -503,10 +503,10 @@ code, d = curl('POST', api(PEER) + '/checkout', {'rail': 'stripe', 'amount': 100
 check('a top-up below the minimum is 502 with the reason',
       code == 502 and 'minimum' in err_of(d), (code, d))
 view = wait_view(PEER, PJAR, lambda v: any(
-    r.get('status') == 'refused' for r in dictish(v.get('checkouts')).values()))
+    r.get('status') == 'refused' and 'minimum' in str(r.get('note')) for r in dictish(v.get('checkouts')).values()))
 refused = [r for r in dictish(view.get('checkouts')).values() if r.get('status') == 'refused']
 check('the refusal shows in the view with its note',
-      len(refused) >= 1 and 'minimum' in str(refused[0].get('note')), refused[:1])
+      any('minimum' in str(r.get('note')) for r in refused), refused)
 
 code, co = curl('POST', api(PEER) + '/checkout', {'rail': 'stripe', 'amount': CARD},
                 jar=PJAR, timeout=180)

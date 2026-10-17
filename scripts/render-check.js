@@ -34,6 +34,7 @@ is(card.indexOf('Orrery generator') > 0 && (card.match(/data-pick="1"/g) || []).
 var pickIds = function (box) { return (r.pickModels[box] || []).map(function (m) { return m.id; }); };
 is(pickIds('tier-transcription').join() === 'w/1', 'the transcription tier offers the speech to text models alone');
 is(pickIds('tier-frontier').indexOf('w/1') < 0 && pickIds('tier-decision').indexOf('w/1') < 0 && pickIds('tier-frontier').indexOf('a/b') >= 0, 'and no other tier offers them');
+is(pickIds('tier-decision').indexOf('typesafe/jev-1.13') < 0 && pickIds('tier-decision').join() === 'a/b', 'with no OpenRouter provider the decision tier offers the chat models and no Jev');
 is(card.indexOf('Talon decision gate') > 0 && card.indexOf('data-tier="decision"') > 0, 'every feature and the decision tier are there');
 is(card.indexOf('id="feat-dictation"') > 0 && card.indexOf('Talon dictation') > 0, 'dictation has its picker');
 // the lib's +feature-names is the list: the page shows a picker for each
@@ -102,6 +103,8 @@ var noTok = days.map(function (x) { return { day: x.day, spent: x.spent, request
 var mdl = r.myData({ vendor: '~nisfeb', balance: 1, daily: { days: 10, series: noTok, models: [{ model: 'openrouter', spent: 1, requests: 1, 'in': 0, out: 0 }] }, lease: { usage: 1, limit: 2 } });
 is(mdl.indexOf('Tokens') < 0 && mdl.indexOf('>tokens<') < 0, 'a Data view with no counts shows no tokens anywhere');
 is(r.usageCard({ ledger: [{ kind: 'debit', amount: 5, model: 'openrouter', 'in': 0, out: 0, mode: 'lease', at: new Date().toISOString() }] }).indexOf('>tokens<') < 0, 'the Usage card shows no tokens when none were counted');
+var rcard = r.suggestedCard([{ id: 'a/b', enabled: true }], true);
+is(rcard.indexOf('typesafe/jev-1.13') > 0 && pickIds('tier-decision')[0] === 'typesafe/jev-1.13', 'with one it offers Jev first');
 var bcard = r.suggestedCard([{ id: 'a/b', enabled: true }]);
 var bsel = bcard.slice(bcard.indexOf('id="feat-orrery_browsing"'), bcard.indexOf('</select>', bcard.indexOf('id="feat-orrery_browsing"')));
 is(bsel.indexOf('value="zdr"') > 0 && bsel.indexOf('value="frontier"') < 0, 'the browsing reader can be put on the zdr tier only');
