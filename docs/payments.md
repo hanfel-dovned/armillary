@@ -48,7 +48,7 @@ Eight event types do anything:
 | `checkout.session.completed` | read the session, credit `amount_subtotal` cents times 10.000, keep its PaymentIntent on the checkout row, and mark the row paid. A subscription session credits nothing, since its first invoice credits the first period, and stores the Stripe customer and subscription ids |
 | `checkout.session.async_payment_succeeded` | the same, for a payment method that settles later |
 | `checkout.session.async_payment_failed` | mark the checkout row `failed`. Nothing was credited, so nothing comes off |
-| `invoice.paid` | read the invoice, find the account by its Stripe customer id, credit the plan's `credit`, and set `renews` from the invoice's period end |
+| `invoice.paid` | read the invoice with `expand[]=payments`, find the account by its Stripe customer id, credit the plan's `credit`, set `renews` from the invoice's period end, and keep the invoice's payment as a paid checkout row keyed by the invoice, with its PaymentIntent, so a dispute or a refund on that period finds its credit. An API older than 2025-03 refuses the expand, and the invoice is read again plain, with the PaymentIntent on it |
 | `customer.subscription.deleted` | find the account holding that subscription id and clear its subscription |
 | `charge.dispute.created` | read the dispute, find the ship by its PaymentIntent, and take the money back off the ledger |
 | `charge.dispute.closed` | note the dispute's final status in the ring and change nothing |
@@ -123,7 +123,7 @@ There is one product: Talon inference credit, bought in dollars and spent on any
 
 Brave searches through the vendor are charged the same way (version 32): each answered search at the vendor's cost for it, Brave's list price unless the vendor sets its own, times the markup.
 
-Since version 36 a payment is credited once however old it is: a credit or refund row is never folded by compaction, and a checkout already marked paid is never credited again. A dispute takes back at most what its payment credited, which leaves the tax out, and a refund made on Stripe (`charge.refunded`) takes back the credit it undoes, partial refunds included. A subscription's every period, the first too, is credited by its invoice at the plan's credit.
+Since version 36 a payment is credited once however old it is: a credit or refund row is never folded by compaction, and a checkout already marked paid is never credited again. A dispute takes back at most what its payment credited, which leaves the tax out, and a refund made on Stripe (`charge.refunded`) takes back the credit it undoes, partial refunds included. A subscription's every period, the first too, is credited by its invoice at the plan's credit, and each invoice's payment is a checkout row of its own, so a dispute or a refund on any period finds its credit. A paid checkout row is kept for good for the same reason; any other finished row goes a month after its window, and an account's view carries the last thirty days. Every price, plan amount, markup, minimum and search cost an owner sends must be a whole number.
 
 ## Plans
 
@@ -191,7 +191,7 @@ The credit is deduped by its ref, so running it twice answers `already recorded`
 
 The body is read for exactly two things: `type` and `invoiceId`. The amount, the ship and the status all come from reading the invoice back with the vendor's own api key.
 
-When `btcpay_webhook_secret` is set, the `BTCPay-Sig` header is checked first: the header must read `sha256=` followed by the lowercase hex HMAC-SHA256 of the raw body with the secret, compared with a fold that does not stop at the first difference. A bad or missing signature is 401 and nothing else happens. Everything past a good signature answers 200, even a failed read, because BTCPay retries a failed delivery six times.
+In live mode the secret is required: a settings save with a BTCPay key and no secret is refused, and the webhook with no secret configured is 400. When `btcpay_webhook_secret` is set, the `BTCPay-Sig` header is checked first: the header must read `sha256=` followed by the lowercase hex HMAC-SHA256 of the raw body with the secret, compared with a fold that does not stop at the first difference. A bad or missing signature is 401 and nothing else happens. Everything past a good signature answers 200, even a failed read, because BTCPay retries a failed delivery six times.
 
 An invoice with no checkout row on the named ship is refused `unknown invoice`. The row is written before the url is ever answered.
 
