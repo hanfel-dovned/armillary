@@ -174,6 +174,24 @@
     (expect !>(?=(%& -.got)))
     (expect-eq !>(`@ud`2) !>(?:(?=(%& -.got) (lent p.got) 0)))
   ==
+::  +test-de-catalog-fraction: a price that is not whole microdollars
+::  is refused; read as 0 it would sell the model free
+::
+++  test-de-catalog-fraction
+  =/  row  |=(p=@t (de-catalog:arm (jo (rap 3 '[{"id":"a","provider":"stub","in":' p '}]' ~))))
+  ;:  weld
+    (expect-eq !>('row 0 prices: whole microdollars') !>((why (row '0.5'))))
+    (expect-eq !>('row 0 prices: whole microdollars') !>((why (row '1e6'))))
+    (expect-eq !>('row 0 prices: whole microdollars') !>((why (row '"5"'))))
+    (expect !>((taken (row 'null'))))
+    (expect !>((taken (row '1500000'))))
+  ==
+++  test-wholes
+  ;:  weld
+    (expect !>((wholes:arm (jo '{"a":1,"b":null}') `(list @t)`~['a' 'b' 'c'])))
+    (expect !>(!(wholes:arm (jo '{"a":1,"b":0.5}') `(list @t)`~['a' 'b'])))
+    (expect !>(!(wholes:arm (jo '{"a":-1}') `(list @t)`~['a'])))
+  ==
 ++  test-de-catalog-duplicate
   =/  bad  (jo '[{"id":"a","provider":"stub"},{"id":"b","provider":"stub"},{"id":"a","provider":"stub"}]')
   =/  got  (de-catalog:arm bad)
@@ -545,6 +563,12 @@
     (expect !>((refused (de-op-subscription:arm (jo '{"subscription":"sub_9"}')))))
     (expect !>((taken (de-op-clear-subscription:arm (jo '{"ship":"~feb"}')))))
   ==
+++  test-de-settings-fraction
+  =/  got  (de-settings:arm (jo '{"markup_pct":130.5,"mode":"stub"}'))
+  (expect-eq !>('markup_pct, min_topup and the minutes: whole numbers') !>(?:(?=(%| -.got) p.got '')))
+++  test-de-plan-fraction
+  =/  got  (de-plan:arm (jo '{"id":"a","kind":"topup","price":2500000.5,"credit":1}'))
+  (expect-eq !>('price and credit: whole microdollars') !>(?:(?=(%| -.got) p.got '')))
 ++  test-de-settings-bad-mode
   =/  got  (de-settings:arm (jo '{"markup_pct":130,"mode":"nope"}'))
   (expect-eq !>('mode: stub or live') !>(?:(?=(%| -.got) p.got '')))

@@ -105,6 +105,19 @@
   =/  v=json  (gj jon k)
   ?.  ?=([%n *] v)  0
   (fall (rush p.v dem) 0)
+::  +wholes: is each of .ks absent, null or a whole number. +gn reads a
+::  fraction or an exponent as 0, which on a price is a free model, so
+::  what an owner sends is checked with this first.
+::
+++  wholes
+  |=  [jon=json ks=(list @t)]
+  ^-  ?
+  %+  levy  ks
+  |=  k=@t
+  =/  v=json  (gj jon k)
+  ?|  ?=(~ v)
+      &(?=([%n *] v) ?=(^ (rush p.v dem)))
+  ==
 ++  gb                                          ::  a boolean, false when absent
   |=  [jon=json k=@t]
   ^-  ?
@@ -477,6 +490,8 @@
   =/  up=@t  ?:(=('' (gs j 'upstream')) id (gs j 'upstream'))
   ?:  (gth (met 3 up) max-model-id)
     [%| (cat 3 where 'upstream: 1 to 200 bytes')]
+  ?.  (wholes j ~['in' 'out' 'cost_in' 'cost_out'])
+    [%| (cat 3 where 'prices: whole microdollars')]
   =/  row=model-row
     :*  id
         prov
@@ -1412,6 +1427,8 @@
   |=  jon=json
   ^-  (each settings @t)
   ?.  ?=([%o *] jon)  [%| 'a JSON object is required']
+  ?.  (wholes jon ~['markup_pct' 'min_topup' 'stripe_minutes' 'btcpay_minutes'])
+    [%| 'markup_pct, min_topup and the minutes: whole numbers']
   =/  pct=@ud  (gn jon 'markup_pct')
   ?:  =(0 pct)  [%| 'markup_pct: a whole percent above zero']
   =/  mode=@t  (gs jon 'mode')
@@ -1492,6 +1509,7 @@
   =/  kind=@t  (gs jon 'kind')
   ?.  |(=('topup' kind) =('subscription' kind))
     [%| 'kind: topup or subscription']
+  ?.  (wholes jon ~['price' 'credit'])  [%| 'price and credit: whole microdollars']
   =/  price=@ud  (gn jon 'price')
   ?:  =(0 price)  [%| 'price: above zero']
   =/  credit=@ud  (gn jon 'credit')

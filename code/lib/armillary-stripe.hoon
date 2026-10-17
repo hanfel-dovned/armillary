@@ -310,17 +310,22 @@
   ==
 ::  ==  invoices
 ::
+::    .payments asks for the invoice's payments list, which holds the
+::    PaymentIntent since the 2025-03 API. An older API refuses the
+::    expand, and answers the PaymentIntent on the invoice itself.
+::
 ++  invoice-request
-  |=  [base=@t key=@t iid=@t]
+  |=  [base=@t key=@t iid=@t payments=?]
   ^-  request:http
   =/  url=@t  (at base (rap 3 '/v1/invoices/' (url-encode iid) ~))
+  =?  url  payments  (cat 3 url '?expand%5B%5D=payments')
   [%'GET' url (auth-only key) ~]
 ::  +read-invoice: one paid invoice on a subscription. The first line is
 ::  the plan's: a subscription made here holds exactly one.
 ::
 ++  read-invoice
   |=  body=@t
-  ^-  (unit [id=@t paid=? customer=@t subscription=@t price=@t period-end=@ud])
+  ^-  (unit [id=@t paid=? customer=@t subscription=@t price=@t period-end=@ud intent=@t])
   =/  jon=json  (de-body body)
   ?.  ?=([%o *] jon)  ~
   =/  id=@t  (gs jon 'id')
@@ -338,6 +343,12 @@
   =/  price=@t
     =/  new=@t  (gs (gj (gj first 'pricing') 'price_details') 'price')
     ?:(=('' new) (gs (gj first 'price') 'id') new)
+  ::  the PaymentIntent, which a dispute or a refund names: on the
+  ::  invoice before the 2025-03 API, on its first payment since
+  =/  intent=@t
+    =/  pays=(list json)  (ga (gj jon 'payments') 'data')
+    =/  new=@t  ?~(pays '' (gs (gj i.pays 'payment') 'payment_intent'))
+    ?:(=('' new) (gs jon 'payment_intent') new)
   :-  ~
   :*  id
       ?|(=('paid' (gs jon 'status')) (gb jon 'paid'))
@@ -345,6 +356,7 @@
       sub
       price
       (gn (gj first 'period') 'end')
+      intent
   ==
 ::  ==  disputes
 ::
