@@ -681,6 +681,57 @@
 ::  +is-stream: did the customer ask for a stream
 ::
 ++  is-stream  |=(jon=json ^-(? (gb jon 'stream')))
+::  +decisions-url: the decisions route beside a chat base: a trailing
+::  /v1 becomes /alpha/decisions. OpenRouter's base gives its own route
+::  and the proxy's base gives the proxy's, so one rule serves both.
+::
+++  decisions-url
+  |=  base=@t
+  ^-  @t
+  =/  b=@t  (no-slash base)
+  =/  n=@ud  (met 3 b)
+  =?  b  &((gte n 3) =('/v1' (cut 3 [(sub n 3) 3] b)))  (end [3 (sub n 3)] b)
+  (cat 3 b '/alpha/decisions')
+::  +audio-form: OpenRouter's JSON transcription body as the multipart
+::  form OpenAI's API and the servers that copy it read: the model, a
+::  language or prompt when given, a JSON answer, and the audio decoded
+::  into a file. ~ when the audio is not base64 or its format is not a
+::  short lowercase word. ponytail: a fixed boundary; a clip holding
+::  these exact bytes would break the form, and none will.
+::
+++  audio-form
+  |=  jon=json
+  ^-  (unit [type=@t body=octs])
+  =/  audio=json  (gj jon 'input_audio')
+  =/  fmt=@t  (gs audio 'format')
+  ?:  |(=('' fmt) (gth (met 3 fmt) 8))  ~
+  ?.  (levy (trip fmt) |=(c=@ |(&((gte c 'a') (lte c 'z')) &((gte c '0') (lte c '9')))))  ~
+  =/  raw=(unit octs)  (de:base64:mimes:html (gs audio 'data'))
+  ?~  raw  ~
+  =/  edge=@t  'armillary-0b7e2c94d1f6a35e'
+  =/  field
+    |=  [k=@t v=@t]
+    (rap 3 '--' edge '\0d\0aContent-Disposition: form-data; name="' k '"\0d\0a\0d\0a' v '\0d\0a' ~)
+  =/  extra=(list @t)
+    %+  murn  ~['language' 'prompt']
+    |=  k=@t
+    =/  v=@t  (gs jon k)
+    ?:(=('' v) ~ `(field k v))
+  =/  top=@t
+    %+  rap  3
+    ;:  weld
+      ~[(field 'model' (gs jon 'model')) (field 'response_format' 'json')]
+      extra
+      :~  '--'  edge
+          '\0d\0aContent-Disposition: form-data; name="file"; filename="audio.'  fmt
+          '"\0d\0aContent-Type: application/octet-stream\0d\0a\0d\0a'
+      ==
+    ==
+  =/  tail=@t  (rap 3 '\0d\0a--' edge '--\0d\0a' ~)
+  =/  parts=(list octs)  ~[(as-octs:mimes:html top) u.raw (as-octs:mimes:html tail)]
+  :-  ~
+  :-  (cat 3 'multipart/form-data; boundary=' edge)
+  [(roll (turn parts head) add) (can 3 parts)]
 ::  ==  the ledger
 ::
 +$  row
