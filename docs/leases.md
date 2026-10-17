@@ -54,7 +54,7 @@ When the ship holds a lease that is not disabled, that route answers lease mode 
 
 That is the whole fallback. A lease that has run out of money is `disabled`, so the route answers proxy mode, and the proxy answers 402 with a line a person can read. The client keeps its one code path either way.
 
-`POST /api/lease` takes a lease and answers it. `DELETE /api/lease` gives it back: the ship forgets the key at once, so a key that is gone here is gone here even if the vendor is down, and the vendor deletes it upstream when the op lands.
+`POST /api/lease` takes a lease and answers it. `DELETE /api/lease` gives it back: the ship forgets the key at once, so a key that is gone here is gone here even if the vendor is down, and the vendor deletes it upstream when the op lands. Before the delete the vendor reconciles the lease, so what the key spent since the last tick is charged; a reconcile that fails does not stop the delete. The owner's drop and an account's deletion do the same.
 
 ## Where the key lives
 

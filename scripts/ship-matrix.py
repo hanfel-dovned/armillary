@@ -354,15 +354,16 @@ check('with a Brave key the customer is offered the vendor\'s search and its own
       and str(dictish(dictish(inf).get('search')).get('url', '')).endswith('/apps/armillary/brave')
       and dictish(dictish(inf).get('search')).get('key') == secret, view.get('search_offered'))
 BPROXY = HOST + '/apps/armillary/brave'
-out = subprocess.run(['curl', '-s', '-m', '60', '-H', 'x-subscription-token: ' + secret,
+# the customer has no credit yet: a search is refused before it reaches
+# Brave, so a ship that never paid cannot spend the vendor's key
+out = subprocess.run(['curl', '-s', '-m', '60', '-w', '\n%{http_code}', '-H', 'x-subscription-token: ' + secret,
                       BPROXY + '/res/v1/web/search?q=hello%20world%20%26%20more&count=3'],
                      capture_output=True, text=True).stdout
-got = dictish(json.loads(out or '{}'))
-check('a web search reaches Brave with its query whole and the vendor key',
-      got.get('path') == '/res/v1/web/search' and dictish(got.get('query')).get('q') == 'hello world & more'
-      and got.get('token') == 'brave-gate-key', {k: v for k, v in got.items() if k != 'token'})
+text, _, code = out.rpartition('\n')
+check('a web search with no credit is 402, on Brave\'s own key header too',
+      code == '402' and 'balance' in text, (code, text[:120]))
 code, d = curl('GET', BPROXY + '/res/v1/local/place_search?q=Diner&latitude=40.1&longitude=-74.2', bearer=secret)
-check('a place search passes on the bearer key', code == 200 and dictish(d).get('path') == '/res/v1/local/place_search', (code, d))
+check('and a place search on the bearer key', code == 402 and 'balance' in err_of(d), (code, d))
 code, d = curl('GET', BPROXY + '/res/v1/news/search?q=x', bearer=secret)
 check('any other Brave path is 404', code == 404, (code, d))
 code, d = curl('GET', BPROXY + '/res/v1/web/search?q=x')
@@ -370,7 +371,9 @@ check('a search without a key is 403', code == 403, (code, d))
 settle(2)
 code, d = curl('GET', api(HOST) + '/brave', jar=JAR)
 counts = dictish(dictish(d).get('searches')).get(CUST, {})
-check('the searches are counted on the account', sum(dictish(counts).values() or [0]) >= 2, d)
+check('a refused search is neither counted nor charged',
+      sum(dictish(counts).values() or [0]) == 0
+      and not [r for r in ledger_of(HOST, JAR, CUST) if str(r.get('model', '')).startswith('brave/')], d)
 curl('PUT', api(HOST) + '/brave', {'key': None}, jar=JAR)
 settle(2)
 code, d = curl('GET', BPROXY + '/res/v1/web/search?q=x', bearer=secret)
@@ -928,6 +931,11 @@ settings(HOST, JAR, stripe_key='', stripe_webhook_secret='', stripe_url=SSTUB,
 settle(2)
 
 print('giving the lease back')
+# a cent the key spent since the last tick: the drop must charge it
+# before the key goes, or the delete forgets it
+code, d = curl('POST', STUB + '/stub/spend/' + LHASH, {'usd': 0.01}, jar=None)
+check('the key spends a cent the tick has not seen', code == 200, (code, d))
+was = len(ledger_of(HOST, JAR, CUST))
 code, d = curl('DELETE', api(PEER) + '/lease', jar=PJAR, timeout=120)
 check('the customer drops its lease', code == 200, (code, d))
 gone = 0
@@ -937,6 +945,9 @@ for _ in range(20):
         break
     settle(2)
 check('the provider no longer holds the key', gone == 404, gone)
+tail = [r for r in ledger_of(HOST, JAR, CUST)[:max(0, len(ledger_of(HOST, JAR, CUST)) - was)]
+        if r.get('mode') == 'lease' and r.get('cost') == 10000]
+check('and the cent it spent last was charged before it went', len(tail) == 1 and tail[0].get('amount') == 13000, tail)
 row, acct = lease_row()
 check('the owner sees no lease', row == {}, row)
 inf = {}

@@ -2001,9 +2001,17 @@
 ::
 ::  A customer's apps search through the vendor, which holds the Brave
 ::  key: Talon's web search and Orrery's place lookups, the two paths
-::  that pass. The key never leaves the vendor, and each search is
-::  counted on the account that made it.
+::  that pass. The key never leaves the vendor; each search needs credit
+::  and is charged and counted on the account that made it.
 ::
+::  +brave-cost: what one search costs the vendor, in microdollars:
+::  brave.json's cost, or Brave's list price of $5 a thousand (web
+::  search and place search alike) until the vendor sets its own
+::
+++  brave-cost
+  |=  bj=json
+  ^-  @ud
+  ?:((has-key bj 'cost') (gn bj 'cost') 5.000)
 ++  brave-path-ok
   |=  p=(list @t)
   ^-  ?

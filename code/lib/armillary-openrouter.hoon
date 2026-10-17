@@ -247,6 +247,15 @@
   =/  cost=(unit @ud)  (micro-of (gj u 'cost'))
   ?~  cost  ~
   `[u.cost (whole-of (gj u 'input_tokens')) (whole-of (gj u 'output_tokens'))]
+::  +read-cost: what OpenRouter says a call cost, in microdollars, from
+::  usage.cost, or ~ when it said nothing. A chat reply carries it when
+::  the request asked with usage.include; it counts what token prices
+::  miss (cache writes, reasoning, a price changed since the import).
+::
+++  read-cost
+  |=  body=@t
+  ^-  (unit @ud)
+  (micro-of (gj (gj (de-body body) 'usage') 'cost'))
 ::  +whole-of: a JSON whole number, 0 when it is anything else
 ::
 ++  whole-of

@@ -34,6 +34,8 @@ Models it knows:
 
 GET /stub/requests answers how many bodies it has seen and the last one,
 so a gate can assert the ship swapped `model` and dropped `stream`.
+A chat whose body asks usage.include gets usage.cost back, the call's
+price at the stub's own per-token prices, as OpenRouter answers it.
 """
 
 import json
@@ -253,6 +255,13 @@ class Handler(BaseHTTPRequestHandler):
             if message.get("role") == "user":
                 last = message.get("content") or ""
         STATE["n"] += 1
+        usage = {"prompt_tokens": 7 + len(last.split()), "completion_tokens": 5}
+        if (body.get("usage") or {}).get("include") is True:
+            # OpenRouter's usage accounting: what the call cost at the
+            # provider's own price, the way the ship is meant to charge it
+            price = next((m.get("pricing") or {} for m in MODELS if m["id"] == model), {})
+            usage["cost"] = six(usage["prompt_tokens"] * float(price.get("prompt") or 0)
+                                + usage["completion_tokens"] * float(price.get("completion") or 0))
         self.send(
             200,
             {
@@ -261,10 +270,7 @@ class Handler(BaseHTTPRequestHandler):
                 "choices": [
                     {"message": {"role": "assistant", "content": "ok: " + last}}
                 ],
-                "usage": {
-                    "prompt_tokens": 7 + len(last.split()),
-                    "completion_tokens": 5,
-                },
+                "usage": usage,
             },
         )
 
