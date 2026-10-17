@@ -133,6 +133,11 @@
           ::  runs again.
           [~ %'main.sig']
         ;<  ~  bind:m  (rise prod %'main.sig' %'main.sig' 0)
+        ::  a clean start is a reload, which restarts every call in
+        ::  flight from the top, each taking its hold again: the holds
+        ::  on file belong to calls that are gone. A crash restarts the
+        ::  writer alone, and leaves them.
+        ;<  ~  bind:m  ?~(prod drop-holds (pure:m ~))
         |-
         ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-from:io
         ;<  changed=?  bind:m  (apply from sage)
@@ -735,9 +740,11 @@
   |=  s=settings:arm
   ^-  @t
   ?.  ?=(%live mode.s)  ''
-  ?:  =('' stripe-key.s)  ''
-  ?.  =('' stripe-webhook-secret.s)  ''
-  'stripe_webhook_secret: required in live mode'
+  ?:  &(!=('' stripe-key.s) =('' stripe-webhook-secret.s))
+    'stripe_webhook_secret: required in live mode'
+  ?:  &(!=('' btcpay-key.s) =('' btcpay-webhook-secret.s))
+    'btcpay_webhook_secret: required in live mode'
+  ''
 ::  +keep-secret: a blank incoming secret keeps the stored one, an
 ::  explicit null clears it, anything else replaces it
 ::
@@ -1521,7 +1528,7 @@
         pend-rows
         lease
         (gs:arm lj 'error')
-        cj
+        (recent-checkouts cj now)
         newest
         (public-url-of sj)
         +((gn:arm old 'rev'))
@@ -1576,6 +1583,7 @@
   ^-  form:m
   =/  doc=json  (gj:arm jon 'doc')
   ?.  ?=([%o *] doc)  (refuse 'set-brave' 'doc: an object' '')
+  ?.  (wholes:arm doc ~['cost'])  (refuse 'set-brave' 'cost: whole microdollars' '')
   ;<  old=json  bind:m  (read-json (rf 0 / %'brave.json'))
   =/  kj=json  (gj:arm doc 'key')
   =/  key=@t
@@ -1800,7 +1808,11 @@
   ;<  ~  bind:m  (do-write-view ship.c)
   (pure:m &)
 ::  +do-hold: a paid call's worst case set aside while it runs, or let
-::  go when it ends. No audit row: one a call would flush the ring.
+::  go when it ends. The balance is weighed here, in the writer, so
+::  calls that arrive together are weighed one after another: a hold
+::  the balance cannot cover is written as a refusal, which the call
+::  reads back and answers 402. No audit row: one a call would flush
+::  the ring.
 ::
 ++  do-hold
   |=  jon=json
@@ -1812,13 +1824,81 @@
   ;<  hj=json  bind:m  (read-json (rf 0 (acct-dir u.who) %'holds.json'))
   =/  hm=(map @t json)  ?:(?=([%o *] hj) p.hj ~)
   ;<  now=@da  bind:m  get-time:io
+  =/  release=?  (gb:arm jon 'release')
+  ;<  why=@t  bind:m
+    ?:  release  (pure:(fiber:fiber:nexus ,@t) '')
+    (spend-why u.who hm)
   =/  next=(map @t json)
-    ?:  (gb:arm jon 'release')  (~(del by hm) n)
+    ?:  release  (~(del by hm) n)
     %+  ~(put by hm)  n
+    ?.  =('' why)  (pairs:enjs:format ~[['refused' s+why] ['at' (en-time:arm now)]])
     (pairs:enjs:format ~[['amount' (numb:enjs:format (gn:arm jon 'amount'))] ['at' (en-time:arm now)]])
   ?:  =(next hm)  (pure:m |)
   ;<  ~  bind:m  (over:io (rf 0 (acct-dir u.who) %'holds.json') [[/ %json] [%o next]])
   (pure:m &)
+::  +recent-checkouts: what a view carries of checkouts.json, the rows
+::  of the last thirty days and any still open. Paid rows are kept on
+::  file for good, and the view need not carry them all.
+::
+++  recent-checkouts
+  |=  [cj=json now=@da]
+  ^-  json
+  ?.  ?=([%o *] cj)  cj
+  :-  %o
+  %-  malt
+  %+  skim  ~(tap by p.cj)
+  |=  [k=@t row=json]
+  =/  status=@t  (gs:arm row 'status')
+  ?:  |(=('pending' status) =('processing' status))  &
+  =/  when=(unit @da)  (gt:arm row 'expires')
+  |(?=(~ when) (gth (add u.when ~d30) now))
+::  +drop-holds: every account's holds let go, at a clean start
+::
+++  drop-holds
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io (rv 0 /accounts) ~)
+  ?.  ?=([~ %ball *] vw)  (pure:m ~)
+  (drop-holds-each ~(tap in ~(key by dir.ball.u.vw)))
+++  drop-holds-each
+  |=  ships=(list @ta)
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  ships  (pure:m ~)
+  =/  who=(unit @p)  (slaw %p i.ships)
+  ?~  who  (drop-holds-each t.ships)
+  ;<  hj=json  bind:m  (read-json (rf 0 (acct-dir u.who) %'holds.json'))
+  ;<  ~  bind:m
+    ?.  &(?=([%o *] hj) ?=(^ p.hj))  (pure:(fiber:fiber:nexus ,~) ~)
+    (over:io (rf 0 (acct-dir u.who) %'holds.json') [[/ %json] [%o ~]])
+  (drop-holds-each t.ships)
+::  +spend-why: why a ship may not start another paid call, or blank.
+::  What it may spend is its balance less the holds already granted and
+::  what its live lease may still spend at the markup, since both draw
+::  on the one balance. A call starts while anything is left, and its
+::  hold then weighs on the next.
+::
+++  spend-why
+  |=  [who=@p hm=(map @t json)]
+  =/  m  (fiber:fiber:nexus ,@t)
+  ^-  form:m
+  ;<  a=(unit account:arm)  bind:m  (live-account who)
+  ?~  a  (pure:m 'ship: no open account')
+  ?:  |(!(syn:si balance.u.a) =(--0 balance.u.a))  (pure:m 'balance: empty')
+  =/  held=@ud
+    %+  roll  ~(val by hm)
+    |=([j=json n=@ud] ?:((has-key:arm j 'refused') n (add n (gn:arm j 'amount'))))
+  ;<  s=settings:arm  bind:m  (settings-of 0)
+  ;<  lj=json  bind:m  (read-json (rf 0 (acct-dir who) %'lease.json'))
+  =/  l=(unit lease:arm)  (de-lease:arm lj)
+  =/  out=@ud
+    ?~  l  0
+    ?:  |(disabled.u.l (lte limit.u.l usage-seen.u.l))  0
+    (debit-for:aopen limit.u.l usage-seen.u.l markup.s)
+  =/  left=@sd  (dif:si balance.u.a (sun:si (add held out)))
+  ?:  |(!(syn:si left) =(--0 left))
+    (pure:m ?:(=(0 out) 'balance: in use by calls in flight' 'balance: held by your lease; call through it'))
+  (pure:m '')
 ::  +do-expire-holds: a hold older than twelve minutes goes. The proxy
 ::  waits ten for an answer, so one this old belongs to a call whose
 ::  fiber died before it let go.
@@ -1942,15 +2022,15 @@
     ?:  (gte u.when now)  row
     ?.  ?=([%o *] row)  row
     [%o (~(put by p.row) 'status' s+'expired')]
-  ::  a finished row a month past its window goes: the file and every
-  ::  view that carries it grew forever. A payment's credit keeps its ref
-  ::  in the ledger, which is what stops it being credited twice.
+  ::  a finished row a month past its window goes, or the file grew
+  ::  forever. A paid row stays: a dispute or a refund months on finds
+  ::  its payment by the row's PaymentIntent and by nothing else.
   =.  next
     %-  malt
     %+  skip  ~(tap by next)
     |=  [k=@t row=json]
     =/  status=@t  (gs:arm row 'status')
-    ?:  |(=('pending' status) =('processing' status))  |
+    ?:  |(=('pending' status) =('processing' status) =('paid' status))  |
     =/  when=(unit @da)  (gt:arm row 'expires')
     &(?=(^ when) (lth (add u.when ~d30) now))
   ?:  =(cm next)  (expire-each t.ships now n)
@@ -2641,14 +2721,18 @@
   ?:  ?=(%| -.got)  (note-inbox 'inbox' | p.got who)
   =/  o=inbox-op:arm  p.got
   ;<  sj=json  bind:m  (read-json (rf 0 / %'settings.json'))
+  =/  comet=?  &((gb:arm sj 'refuse_comets') (is-comet:arm src))
+  ;<  ex=?  bind:m  (peek-exists:io (rf 0 (acct-dir src) %'account.json'))
   ::  a delete op is answered whoever sent it, opens nothing and stamps
-  ::  nothing: deleting a ship that has no account is a success
-  ?:  ?=(%delete-account -.o)  (inbox-delete src nonce.o)
-  ?:  ?&((gb:arm sj 'refuse_comets') (is-comet:arm src))
-    (note-inbox 'inbox' | 'comet refused' who)
+  ::  nothing: deleting a ship that has no account is a success. A
+  ::  refused comet still deletes the account it holds, but leaves no
+  ::  tombstones without one.
+  ?:  ?=(%delete-account -.o)
+    ?:  &(comet !ex)  (note-inbox 'delete-account' | 'comet refused' who)
+    (inbox-delete src nonce.o)
+  ?:  comet  (note-inbox 'inbox' | 'comet refused' who)
   ::  a ship with no account gets one on its first op, whatever the op
   ::  was; hello opens it itself
-  ;<  ex=?  bind:m  (peek-exists:io (rf 0 (acct-dir src) %'account.json'))
   ;<  ~  bind:m
     ?:  |(ex ?=(%hello -.o))  (pure:(fiber:fiber:nexus ,~) ~)
     (poke-writer 0 (ship-op 'open-account' src))
@@ -4122,6 +4206,7 @@
   ?:  &(=('GET' meth) ?=([%api %brave ~] suffix))        (own (serve-brave-settings eyre-id))
   ?:  &(=('PUT' meth) ?=([%api %brave ~] suffix))
     %-  own
+    ?.  (wholes:arm jon ~['cost'])  (send-err eyre-id 400 'cost: whole microdollars')
     ;<  ~  bind:m  (poke-writer 1 (pairs:enjs:format ~[['op' s+'set-brave'] ['doc' jon]]))
     ;<  ~  bind:m  prod-tick-views
     (send-json eyre-id 200 (pairs:enjs:format ~[['ok' b+&]]))
@@ -5248,31 +5333,6 @@
   =/  live=(list model-row:arm)
     (skim cat |=(r=model-row:arm (~(has by pm) provider.r)))
   (send-json eyre-id 200 (en-models-list:arm live))
-::  +gate-spend: why a ship may not start a paid call, or blank. What it
-::  may spend is its balance less the holds of its calls in flight and
-::  what its live lease may still spend at the markup, since both draw
-::  on the one balance. ponytail: calls that land inside the writer's
-::  lag can still pass together; the window is that lag, not minutes.
-::
-++  gate-spend
-  |=  [up=@ud who=@p a=account:arm markup=@ud]
-  =/  m  (fiber:fiber:nexus ,@t)
-  ^-  form:m
-  ?:  |(!(syn:si balance.a) =(--0 balance.a))  (pure:m 'balance: empty')
-  ;<  hj=json  bind:m  (read-json (rf up (acct-dir who) %'holds.json'))
-  =/  held=@ud
-    ?.  ?=([%o *] hj)  0
-    (roll ~(val by p.hj) |=([j=json n=@ud] (add n (gn:arm j 'amount'))))
-  ;<  lj=json  bind:m  (read-json (rf up (acct-dir who) %'lease.json'))
-  =/  l=(unit lease:arm)  (de-lease:arm lj)
-  =/  out=@ud
-    ?~  l  0
-    ?:  |(disabled.u.l (lte limit.u.l usage-seen.u.l))  0
-    (debit-for:aopen limit.u.l usage-seen.u.l markup)
-  =/  left=@sd  (dif:si balance.a (sun:si (add held out)))
-  ?:  |(!(syn:si left) =(--0 left))
-    (pure:m ?:(=(0 out) 'balance: in use by calls in flight' 'balance: held by your lease; call through it'))
-  (pure:m '')
 ::  +worst-chat: the most a chat call may cost at its row's prices: the
 ::  body at four bytes a token in, and max_tokens out (8192 unset)
 ::
@@ -5291,14 +5351,16 @@
 ::  which the body only hints at; this is the hold, not the charge
 ::
 ++  worst-audio  |=(size=@ud ^-(@ud (max 10.000 (mul 10.000 (div (add size 999.999) 1.000.000)))))
-::  +hold-call: set a call's worst case aside, answering the hold's
-::  nonce, or blank when there is nothing to hold
+::  +hold-call: set a call's worst case aside, at least a microdollar so
+::  every paid call is weighed. Answers the hold's nonce, or the status
+::  and the reason the call may not start. The writer weighs holds one
+::  at a time (+do-hold), and its verdict is read back from holds.json.
 ::
++$  hold-answer  (each @t [code=@ud why=@t])
 ++  hold-call
   |=  [who=@p amount=@ud]
-  =/  m  (fiber:fiber:nexus ,@t)
+  =/  m  (fiber:fiber:nexus ,hold-answer)
   ^-  form:m
-  ?:  =(0 amount)  (pure:m '')
   ;<  n=@t  bind:m  fresh-nonce
   ;<  ~  bind:m
     %+  poke-writer  1
@@ -5306,9 +5368,32 @@
     :~  ['op' s+'hold']
         ['ship' s+(scot %p who)]
         ['nonce' s+n]
-        ['amount' (numb:enjs:format amount)]
+        ['amount' (numb:enjs:format (max 1 amount))]
     ==
-  (pure:m n)
+  (await-hold who n 50)
+::  +await-hold: the writer's verdict on one hold, looked for every tenth
+::  of a second. No verdict in five seconds lets the hold go (the writer
+::  takes pokes in order, so the release lands after it) and is 503.
+::
+++  await-hold
+  |=  [who=@p n=@t left=@ud]
+  =/  m  (fiber:fiber:nexus ,hold-answer)
+  ^-  form:m
+  ;<  hj=json  bind:m  (read-json (rf 1 (acct-dir who) %'holds.json'))
+  =/  got=json  (gj:arm hj n)
+  ?.  ?=([%o *] got)
+    ?:  =(0 left)
+      ;<  ~  bind:m  (release-call who n)
+      (pure:m [%| 503 'busy: try again'])
+    ;<  ~  bind:m  (nap (div ~s1 10))
+    (await-hold who n (dec left))
+  =/  why=@t  (gs:arm got 'refused')
+  ?:  =('' why)  (pure:m [%& n])
+  ;<  ~  bind:m  (release-call who n)
+  (pure:m [%| 402 why])
+::  +free-hold: a free call holds nothing
+::
+++  free-hold  (pure:(fiber:fiber:nexus ,hold-answer) [%& ''])
 ++  release-call
   |=  [who=@p n=@t]
   =/  m  (fiber:fiber:nexus ,~)
@@ -5357,8 +5442,6 @@
   ?~  a  (send-err eyre-id 403 'forbidden')
   ?:  (is-stream:arm jon)
     (send-err eyre-id 400 'stream: not supported on the proxy; take a lease')
-  ;<  why=@t  bind:m  ?:(free (pure:(fiber:fiber:nexus ,@t) '') (gate-spend 1 ship.act u.a markup.s))
-  ?.  =('' why)  (send-err eyre-id 402 why)
   ::  the call's worst case is held while it runs, so calls in flight
   ::  together cannot each spend the whole balance
   =/  worst=@ud
@@ -5387,7 +5470,9 @@
   =/  parts=(unit [type=@t body=octs])  ?.(form ~ (audio-form:arm body))
   ?:  &(form ?=(~ parts))
     (send-err eyre-id 400 'input_audio: data in base64 and a format such as wav')
-  ;<  held=@t  bind:m  ?:(free (pure:(fiber:fiber:nexus ,@t) '') (hold-call ship.act worst))
+  ;<  hold=hold-answer  bind:m  ?:(free free-hold (hold-call ship.act worst))
+  ?:  ?=(%| -.hold)  (send-err eyre-id code.p.hold why.p.hold)
+  =/  held=@t  p.hold
   ;<  res=[status=@ud body=@t]  bind:m
     ?^  parts
       (post-form (join-url base-url.u.p leaf) api-key.u.p type.u.parts body.u.parts ~m10)
@@ -5496,12 +5581,12 @@
   =/  free=?  &(own-free.s =(ship.act our))
   ;<  a=(unit account:arm)  bind:m  (live-account-at 1 ship.act)
   ?~  a  (send-err eyre-id 403 'forbidden')
-  ;<  why=@t  bind:m  ?:(free (pure:(fiber:fiber:nexus ,@t) '') (gate-spend 1 ship.act u.a markup.s))
-  ?.  =('' why)  (send-err eyre-id 402 why)
   ?:  &(?=(^ row) ?=(^ chat))
     (decide-on-chat eyre-id ship.act markup.s free u.row u.p jon)
   ::  a decisions model's call costs a fraction of a cent; a cent is held
-  ;<  held=@t  bind:m  ?:(free (pure:(fiber:fiber:nexus ,@t) '') (hold-call ship.act 10.000))
+  ;<  hold=hold-answer  bind:m  ?:(free free-hold (hold-call ship.act 10.000))
+  ?:  ?=(%| -.hold)  (send-err eyre-id code.p.hold why.p.hold)
+  =/  held=@t  p.hold
   ;<  res=[status=@ud body=@t]  bind:m
     (post-json (decisions-url:arm base-url.u.p) api-key.u.p jon ~m2)
   ;<  ~  bind:m  ?:((two-xx status.res) (pure:(fiber:fiber:nexus ,~) ~) (release-call ship.act held))
@@ -5547,7 +5632,9 @@
   =/  ask=json  (decision-chat:arm upstream.row jon router)
   =/  size=@ud  (met 3 (en:json:html ask))
   =/  worst=@ud  (add (charge:arm (div (add size 3) 4) in.row) (charge:arm 4.096 out.row))
-  ;<  held=@t  bind:m  ?:(free (pure:(fiber:fiber:nexus ,@t) '') (hold-call who worst))
+  ;<  hold=hold-answer  bind:m  ?:(free free-hold (hold-call who worst))
+  ?:  ?=(%| -.hold)  (send-err eyre-id code.p.hold why.p.hold)
+  =/  held=@t  p.hold
   ::  ten minutes, the proxy's own wait: a local model on modest
   ::  hardware is the reason a chat model decides at all
   ;<  res=[status=@ud body=@t]  bind:m
@@ -6450,7 +6537,9 @@
         ['subscription' s+subscription.u.got]
         ['plan' s+(gs:arm row.u.hit 'plan')]
     ==
-  ;<  ~  bind:m  (mark-paid u.who nonce.u.hit row.u.hit intent.u.got)
+  ::  a subscription's payments are its invoices' (+credit-invoice), so
+  ::  its session's row names none, and a dispute finds the invoice
+  ;<  ~  bind:m  (mark-paid u.who nonce.u.hit row.u.hit ?:(subs '' intent.u.got))
   (pure:m [& ?:(already 'already recorded' '')])
 ::  +credit-invoice: a subscription renewed. The plan says what to
 ::  credit, and the invoice says when the next period ends.
@@ -6463,7 +6552,12 @@
   ;<  s=settings:arm  bind:m  (settings-of 1)
   ?:  =('' stripe-key.s)  (pure:m [| 'stripe_key: not set'])
   ;<  res=[status=@ud body=@t]  bind:m
-    (fetch (invoice-request:astripe stripe-url.s stripe-key.s iid))
+    (fetch (invoice-request:astripe stripe-url.s stripe-key.s iid &))
+  ::  an API older than 2025-03 refuses the payments expand, and holds
+  ::  the PaymentIntent on the invoice itself
+  ;<  res=[status=@ud body=@t]  bind:m
+    ?.  =(400 status.res)  (pure:(fiber:fiber:nexus ,[status=@ud body=@t]) res)
+    (fetch (invoice-request:astripe stripe-url.s stripe-key.s iid |))
   ?.  (two-xx status.res)  (pure:m [| (stripe-why status.res body.res)])
   =/  got  (read-invoice:astripe body.res)
   ?~  got  (pure:m [| 'stripe answered no invoice'])
@@ -6509,6 +6603,20 @@
         ['plan' s+id.u.p]
         ['renews' (en-time:arm (from-unix:arm period-end.u.got))]
     ==
+  ::  the invoice's payment is a checkout row of its own, keyed by the
+  ::  invoice, so a dispute or a refund on any period finds its credit
+  ;<  now=@da  bind:m  get-time:io
+  =/  row=json
+    %-  pairs:enjs:format
+    :~  ['rail' s+'stripe']
+        ['plan' s+id.u.p]
+        ['amount' (en-num:arm price.u.p)]
+        ['url' s+'']
+        ['sid' s+id.u.got]
+        ['expires' (en-time:arm now)]
+        ['status' s+'']
+    ==
+  ;<  ~  bind:m  (mark-paid ship.a id.u.got row intent.u.got)
   (pure:m [& ?:(already 'already recorded' '')])
 ::  +drop-subscription: Stripe says the subscription is gone. The
 ::  account it belongs to is the one holding that id.
@@ -6839,6 +6947,11 @@
   ^-  form:m
   ;<  s=settings:arm  bind:m  (settings-of 1)
   =/  sig=@t  (fall (get-header:http 'btcpay-sig' heads) '')
+  ::  live mode checks the signature always, as the Stripe hook does
+  ?:  ?&(?=(%live mode.s) =('' btcpay-webhook-secret.s))
+    =/  why=@t  'signature: no signing secret configured'
+    ;<  ~  bind:m  (poke-note 1 'btcpay.webhook' | why)
+    (send-err eyre-id 400 why)
   =/  checked=?
     ?:  =('' btcpay-webhook-secret.s)  &
     (verify-sig:abtc btcpay-webhook-secret.s sig raw)

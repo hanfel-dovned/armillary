@@ -463,6 +463,27 @@ check('the first call answers', first.get('r', (0,))[0] == 200, first.get('r'))
 settle(2)
 code, d = curl('POST', V1 + '/chat/completions', {'model': 'stub/alpha', 'messages': message('hi')}, jar=None, bearer=SEC1)
 check('once it has, the hold is gone and a call passes', code == 200, (code, d))
+# six calls at once against a balance two worst cases cover: the writer
+# weighs each hold in turn, so exactly two start and four are 402
+code, acct = curl('GET', API + '/accounts/' + SHIP)
+bal = dictish(dictish(acct).get('account')).get('balance', 0)
+cap = (bal * 6 // 10) // 19 + 1          # out at 19.5 a token: about 60 percent each
+burst = []
+def burst_call():
+    burst.append(curl('POST', V1 + '/chat/completions',
+                      {'model': 'stub/slow5', 'messages': message('hi'), 'max_tokens': cap},
+                      jar=None, bearer=SEC1)[0])
+threads = [threading.Thread(target=burst_call) for _ in range(6)]
+for t in threads:
+    t.start()
+for t in threads:
+    t.join()
+check('six calls at once on two worst cases: two start and four are 402',
+      sorted(burst) == [200, 200, 402, 402, 402, 402], (bal, cap, sorted(burst)))
+settle(2)
+code, d = curl('PUT', API + '/catalog', [dict(r, **({'in': 0.5} if r['id'] == 'stub/alpha' else {})) for r in cat])
+check('a catalog price that is not whole microdollars is 400',
+      code == 400 and 'whole microdollars' in err_of(d), (code, d))
 curl('PUT', API + '/catalog', cat)
 settle(2)
 
@@ -705,6 +726,9 @@ code, d = curl('PUT', API + '/brave', {'cost': 3000})
 settle()
 code, d = curl('GET', API + '/brave')
 check('the vendor sets its own cost and keeps its key', dictish(d).get('cost') == 3000 and dictish(d).get('key_set') is True, d)
+code, d = curl('PUT', API + '/brave', {'cost': 2.5})
+check('a search cost that is not whole microdollars is 400',
+      code == 400 and 'whole microdollars' in err_of(d), (code, d))
 code, d = curl('GET', BPROXY + '/res/v1/web/search?q=x', jar=None, bearer=SEC1)
 settle(2)
 check('and the next search is charged at it', code == 200 and dictish(ledger()[0]).get('amount') == 3900, ledger()[:1])
@@ -955,6 +979,24 @@ code, d = curl('GET', API + '/settings')
 check('a blank BTCPay secret keeps the stored one',
       dictish(d).get('btcpay_key', '').endswith('1234')
       and dictish(d).get('btcpay_webhook_secret', '').endswith('gate'), d)
+code, d = settings(stripe_key='', stripe_webhook_secret='', stripe_url=SSTUB,
+                   public_url=HOST, mode='live', btcpay_url=BSTUB,
+                   btcpay_store=BTC_STORE, btcpay_key='', btcpay_webhook_secret=None)
+check('live mode with a BTCPay key and no BTCPay secret is refused',
+      code == 400 and 'btcpay_webhook_secret' in err_of(d), (code, d))
+code, d = settings(stripe_key='', stripe_webhook_secret='', stripe_url=SSTUB,
+                   public_url=HOST, mode='live', btcpay_url=BSTUB,
+                   btcpay_store=BTC_STORE, btcpay_key=None, btcpay_webhook_secret=None)
+check('live mode with no BTCPay key and no secret saves', code == 200, (code, d))
+settle()
+code, d = btc_hook('InvoiceSettled', 'inv_nope', sig='')
+check('the BTCPay webhook in live mode with no signing secret is 400',
+      code == 400 and err_of(d) == 'signature: no signing secret configured', (code, d))
+code, d = settings(stripe_key='', stripe_webhook_secret='', stripe_url=SSTUB,
+                   public_url=HOST, mode='live', btcpay_url=BSTUB,
+                   btcpay_store=BTC_STORE, btcpay_key=BTC_KEY, btcpay_webhook_secret=WHSEC)
+check('the BTCPay settings go back', code == 200, (code, d))
+settle()
 
 print('btcpay: the webhook')
 code, d = btc_hook('InvoiceSettled', 'inv_nope', sig='sha256=deadbeef')

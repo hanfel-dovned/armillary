@@ -603,6 +603,55 @@ check('a renewal credits the plan again', view.get('balance') == want + PLAN_CRE
 fresh_refs = set(refs_of(HOST, JAR, CUST)) - before
 check('the renewal carries a new ref', len(fresh_refs) == 1, sorted(fresh_refs))
 
+# every subscription payment is a checkout row naming its PaymentIntent,
+# so a refund or a dispute on any period finds the credit it undoes
+def checkouts_of():
+    code, acct = curl('GET', api(HOST) + '/accounts/' + CUST, jar=JAR)
+    return dictish(dictish(acct).get('checkouts'))
+RENEW = sorted(fresh_refs)[0] if fresh_refs else ''
+rows = checkouts_of()
+RPI = dictish(rows.get(RENEW)).get('intent', '')
+check('the renewal is a paid checkout row with its PaymentIntent',
+      dictish(rows.get(RENEW)).get('status') == 'paid' and RPI.startswith('pi_'), rows.get(RENEW))
+srow = [r for r in rows.values() if dictish(r).get('sid') == suburl.rsplit('/', 1)[-1]]
+check('the subscription session names no PaymentIntent, its invoice does',
+      len(srow) == 1 and srow[0].get('intent') == '', srow)
+BAL_R = dictish(fresh(PEER, PJAR)).get('balance', 0)
+code, ch = stub_post(SSTUB + '/stub/refund-charge/' + RPI + '/100')
+check('the stub refunds a dollar of the renewal on Stripe',
+      code == 200 and dictish(ch).get('amount_refunded') == 100, (code, ch))
+view = wait_view(PEER, PJAR, lambda v: v.get('balance') == BAL_R - 1000000, tries=15)
+check('charge.refunded takes that dollar back',
+      view.get('balance') == BAL_R - 1000000, (BAL_R - 1000000, view.get('balance')))
+stub_post(SSTUB + '/stub/refund-charge/' + RPI + '/150')
+view = wait_view(PEER, PJAR, lambda v: v.get('balance') == BAL_R - 2500000, tries=15)
+check('a second partial refund takes back only what is new',
+      view.get('balance') == BAL_R - 2500000, (BAL_R - 2500000, view.get('balance')))
+stub_post(SSTUB + '/stub/refund-charge/' + RPI + '/0')
+settle(8)
+taken = [r for r in ledger_of(HOST, JAR, CUST) if str(r.get('ref', '')).startswith('refund-' + dictish(ch).get('id', 'x') + '-')]
+check('a redelivery takes nothing more',
+      len(taken) == 2 and dictish(fresh(PEER, PJAR)).get('balance') == BAL_R - 2500000,
+      (len(taken), dictish(fresh(PEER, PJAR)).get('balance')))
+# an account on an API older than 2025-03 refuses the payments expand and
+# names the PaymentIntent on the invoice
+stub_post(SSTUB + '/stub/api/old')
+before = set(refs_of(HOST, JAR, CUST))
+BAL_O = dictish(fresh(PEER, PJAR)).get('balance', 0)
+code, d = stub_post(SSTUB + '/stub/renew/' + SUB)
+view = wait_view(PEER, PJAR, lambda v: v.get('balance') == BAL_O + PLAN_CREDIT, tries=15)
+check('on the old API a renewal still credits',
+      view.get('balance') == BAL_O + PLAN_CREDIT, (BAL_O + PLAN_CREDIT, view.get('balance')))
+OLD = dictish(d).get('invoice', '')
+check('and its row names the invoice\'s own PaymentIntent',
+      str(dictish(checkouts_of().get(OLD)).get('intent', '')).startswith('pi_'), checkouts_of().get(OLD))
+stub_post(SSTUB + '/stub/api/new')
+code, dp = stub_post(SSTUB + '/stub/dispute/' + OLD)
+view = wait_view(PEER, PJAR, lambda v: v.get('balance') == BAL_O + PLAN_CREDIT - 2500000, tries=15)
+check('a dispute on a renewal takes back what was paid for it',
+      code == 200 and view.get('balance') == BAL_O + PLAN_CREDIT - 2500000,
+      (code, BAL_O + PLAN_CREDIT - 2500000, view.get('balance')))
+
 code, d = curl('POST', api(PEER) + '/cancel-subscription', {}, jar=PJAR, timeout=120)
 check('the customer asks to cancel', code == 202, (code, d))
 cancelled = False

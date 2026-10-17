@@ -8,9 +8,14 @@ process.
 
 The stub routes: /stub/pay/<session> pays one, /stub/pay-quietly/<session>
 pays one without telling the ship (a webhook still on its way),
-/stub/fail/<session> fails a late settlement, /stub/dispute/<session>
-opens one dispute on its payment and redelivers the same event on every
-later call, /stub/renew/<sub> invents the next invoice,
+/stub/fail/<session> fails a late settlement, /stub/dispute/<session or
+invoice> opens one dispute on its payment and redelivers the same event
+on every later call, /stub/refund-charge/<intent>/<cents> refunds that
+much more of a payment the way the dashboard does and posts
+charge.refunded (0 cents redelivers it), /stub/api/old and /stub/api/new
+choose the invoice shape before or after the 2025-03 API (the old one
+refuses expand[]=payments and names its payment_intent), /stub/renew/<sub>
+invents the next invoice,
 /stub/delete/<sub> reports a subscription gone, /stub/broken/on and
 /stub/broken/off make every write answer 503 meanwhile,
 /stub/delay/<seconds> makes the next customer delete take that long,
@@ -50,6 +55,8 @@ STORE = {
     'customers': {},
     'disputes': {},
     'refunds': {},
+    'charges': {},
+    'api': 'new',
     'hooks': [],
     'n': 0,
     'session_gets': 0,
@@ -96,6 +103,21 @@ def post_hook(event_type, obj):
         return 0
 
 
+def charge_for(intent, amount):
+    """the charge behind a payment, which a refund on Stripe names"""
+    cid = nid('ch')
+    STORE['charges'][cid] = {'id': cid, 'object': 'charge', 'payment_intent': intent,
+                             'amount': amount, 'amount_refunded': 0}
+    return cid
+
+
+def charge_of(intent):
+    for c in STORE['charges'].values():
+        if c['payment_intent'] == intent:
+            return c
+    return None
+
+
 def pay(sid, quiet=False):
     """mark a session paid and tell the ship, the way a card would.
     quiet pays it and tells nobody: the webhook is still on its way"""
@@ -105,7 +127,11 @@ def pay(sid, quiet=False):
     if s['payment_status'] != 'paid':
         s['payment_status'] = 'paid'
         s['status'] = 'complete'
-        s['payment_intent'] = nid('pi')
+        # a subscription session has no PaymentIntent of its own: its
+        # payment is its first invoice's, as on Stripe
+        if s['mode'] != 'subscription':
+            s['payment_intent'] = nid('pi')
+            charge_for(s['payment_intent'], s['amount_total'])
         if s['mode'] == 'subscription':
             s['customer'] = s.get('customer') or nid('cus')
             s['subscription'] = nid('sub')
@@ -143,22 +169,31 @@ def delete_customer(cid):
 
 def refund(intent):
     """the whole of a payment back to the card, once"""
-    hit = None
-    for s in STORE['sessions'].values():
-        if s.get('payment_intent') == intent:
-            hit = s
+    hit = charge_of(intent)
     if not hit:
         return 400, {'error': {'message': 'stub: no such payment intent',
                                'type': 'invalid_request_error'}}
-    if hit.get('refunded'):
+    if hit['amount_refunded'] >= hit['amount']:
         return 400, {'error': {'message': 'stub: charge already refunded',
                                'type': 'invalid_request_error',
                                'code': 'charge_already_refunded'}}
-    hit['refunded'] = True
+    hit['amount_refunded'] = hit['amount']
     rid = nid('re')
     STORE['refunds'][rid] = {'id': rid, 'object': 'refund', 'payment_intent': intent,
-                             'amount': hit['amount_total'], 'status': 'succeeded'}
+                             'amount': hit['amount'], 'status': 'succeeded'}
     return 200, STORE['refunds'][rid]
+
+
+def refund_on_stripe(intent, cents):
+    """part of a payment refunded from the dashboard, which the ship hears
+    of only through charge.refunded"""
+    hit = charge_of(intent)
+    if not hit:
+        return None
+    hit['amount_refunded'] = min(hit['amount'], hit['amount_refunded'] + cents)
+    threading.Thread(target=post_hook, args=('charge.refunded', {'id': hit['id']}),
+                     daemon=True).start()
+    return hit
 
 
 def fire(sid):
@@ -182,23 +217,28 @@ def fail(sid):
     return s
 
 
-def dispute(sid):
-    """the buyer's bank takes the charge back. One dispute per session,
+def dispute(key):
+    """the buyer's bank takes the charge back. One dispute per payment,
     so posting again is a redelivery of the same event and not a second
-    dispute"""
-    s = STORE['sessions'].get(sid)
-    if not s or not s.get('payment_intent'):
+    dispute. key is a session or an invoice"""
+    s = STORE['sessions'].get(key)
+    inv = STORE['invoices'].get(key)
+    if s and s.get('payment_intent'):
+        intent, amount = s['payment_intent'], s['amount_total']
+    elif inv:
+        intent, amount = inv['_intent'], inv['amount_paid']
+    else:
         return None
     for d in STORE['disputes'].values():
-        if d['payment_intent'] == s['payment_intent']:
+        if d['payment_intent'] == intent:
             found = d
             break
     else:
         did = nid('dp')
         found = STORE['disputes'][did] = {
             'id': did,
-            'payment_intent': s['payment_intent'],
-            'amount': s['amount_total'],
+            'payment_intent': intent,
+            'amount': amount,
             'currency': 'usd',
             'status': 'needs_response',
         }
@@ -211,10 +251,15 @@ def dispute(sid):
 def make_invoice(sub_id):
     sub = STORE['subscriptions'][sub_id]
     iid = nid('in')
+    amount = int(STORE['prices'].get(sub['price'], {}).get('unit_amount') or 0)
+    intent = nid('pi')
+    charge_for(intent, amount)
     STORE['invoices'][iid] = {
         'id': iid,
         'status': 'paid',
         'paid': True,
+        'amount_paid': amount,
+        '_intent': intent,
         'customer': sub['customer'],
         'subscription': sub_id,
         'lines': {'data': [{
@@ -223,6 +268,10 @@ def make_invoice(sub_id):
         }]},
     }
     return iid
+
+
+def iid_tail(iid):
+    return iid.split('_', 1)[-1]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -276,7 +325,28 @@ class Handler(BaseHTTPRequestHandler):
             if not self.bearer_ok():
                 return None
             inv = STORE['invoices'].get(path[len('/v1/invoices/'):])
-            return self.send(200, inv) if inv else self.miss()
+            if not inv:
+                return self.miss()
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            more = 'payments' in query.get('expand[]', [])
+            out = {k: v for k, v in inv.items() if not k.startswith('_')}
+            if STORE['api'] == 'old':
+                if more:
+                    return self.send(400, {'error': {
+                        'message': 'This property cannot be expanded (payments).',
+                        'type': 'invalid_request_error'}})
+                out['payment_intent'] = inv['_intent']
+            elif more:
+                out['payments'] = {'object': 'list', 'data': [{
+                    'id': 'inpay_' + iid_tail(inv['id']), 'object': 'invoice_payment',
+                    'payment': {'type': 'payment_intent', 'payment_intent': inv['_intent']},
+                    'status': 'paid'}]}
+            return self.send(200, out)
+        if path.startswith('/v1/charges/'):
+            if not self.bearer_ok():
+                return None
+            c = STORE['charges'].get(path[len('/v1/charges/'):])
+            return self.send(200, c) if c else self.miss()
         if path.startswith('/v1/disputes/'):
             if not self.bearer_ok():
                 return None
@@ -303,6 +373,13 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith('/stub/fail/'):
             s = fail(path[len('/stub/fail/'):])
             return self.send(200, s) if s else self.miss()
+        if path.startswith('/stub/api/'):
+            STORE['api'] = 'old' if path.endswith('/old') else 'new'
+            return self.send(200, {'api': STORE['api']})
+        if path.startswith('/stub/refund-charge/'):
+            parts = path[len('/stub/refund-charge/'):].split('/')
+            c = refund_on_stripe(parts[0], int(parts[1]) if len(parts) > 1 and parts[1] else 0)
+            return self.send(200, c) if c else self.miss()
         if path.startswith('/stub/dispute/'):
             d = dispute(path[len('/stub/dispute/'):])
             return self.send(200, d) if d else self.miss()
