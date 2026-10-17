@@ -4107,6 +4107,9 @@
   =/  merged=(list model-row:arm)  (merge-import:arm cat (weld fresh spoken))
   =.  merged
     (with-transcription:arm merged `@t`id (sy (turn spoken |=(r=model-row:arm upstream.r))))
+  ::  any other provider says nothing, so a model named for speech to
+  ::  text is tagged by its name
+  =.  merged  (with-transcription:arm merged `@t`id (speech-named:arm merged))
   =/  added=@ud  (sub (lent merged) (lent cat))
   ::  OpenRouter says which models have an endpoint that keeps nothing;
   ::  its rows are tagged zdr by that list. No answer leaves the tags.

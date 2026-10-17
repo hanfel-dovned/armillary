@@ -279,6 +279,25 @@ check('the transcription list\'s model is tagged transcription, a chat model is 
       'transcription' in (dictish(byid.get('stub/whisper')).get('tags') or [])
       and 'transcription' not in (dictish(byid.get('stub/alpha')).get('tags') or []),
       (byid.get('stub/whisper'), byid.get('stub/alpha')))
+# a server that is not OpenRouter lists its whisper model among its
+# chat models and marks nothing, so the name tags it
+code, d = curl('POST', API + '/providers', {'id': 'box', 'name': 'Box', 'kind': 'openai-compatible',
+                                            'base_url': STUB + '/box/v1', 'api_key': 'stub-key'})
+settle()
+code, d = curl('POST', API + '/providers/box/import')
+check('another server\'s import says its whisper model is speech to text',
+      code == 200 and dictish(d).get('added') == 2 and dictish(d).get('transcription') == 2, (code, d))
+settle()
+code, boxed = curl('GET', API + '/catalog')
+bb = {r['id']: r for r in (boxed if isinstance(boxed, list) else [])}
+check('its whisper model is tagged transcription by name, its chat model is not',
+      'transcription' in (dictish(bb.get('whisper-1')).get('tags') or [])
+      and 'transcription' not in (dictish(bb.get('llama3.1:8b')).get('tags') or []),
+      (bb.get('whisper-1'), bb.get('llama3.1:8b')))
+curl('PUT', API + '/catalog', cat)
+settle()
+curl('DELETE', API + '/providers/box')
+settle()
 bad = cat + [{'id': 'other/one', 'provider': 'nope', 'in': 1, 'out': 1}]
 code, d = curl('PUT', API + '/catalog', bad)
 check('a row on an unknown provider is 400 naming the row', code == 400 and 'row 4 provider: unknown' in err_of(d), (code, d))

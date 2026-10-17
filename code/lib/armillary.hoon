@@ -645,6 +645,22 @@
   ?.  &(=(provider provider.r) (~(has in ids) upstream.r))  r
   ?:  (is-transcription r)  r
   r(tags (snoc tags.r 'transcription'))
+::  +speech-named: the upstream ids among .rows whose name says speech
+::  to text, the way Talon tells them. A provider that is not
+::  OpenRouter lists its whisper models with its chat models and marks
+::  nothing, so the name is all there is. ponytail: a name rule; a
+::  speech model named otherwise is tagged by hand in the catalog.
+::
+++  speech-named
+  |=  rows=(list model-row)
+  ^-  (set @t)
+  %-  silt
+  %+  murn  rows
+  |=  r=model-row
+  ^-  (unit @t)
+  =/  low=tape  (cass (trip upstream.r))
+  ?.  |(?=(^ (find "whisper" low)) ?=(^ (find "transcribe" low)))  ~
+  `upstream.r
 ::  ==  an upstream answer
 ::
 ::  +read-usage: the token counts an upstream reported, or ~ when it

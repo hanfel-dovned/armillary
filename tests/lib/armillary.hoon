@@ -255,6 +255,19 @@
     (expect-eq !>(`(list @t)`~['stub/alpha' 'stub/alpha' 'stub/beta']) !>(ups))
     (expect-eq !>(got) !>((merge-import:arm got fresh)))
   ==
+::  a model named for speech to text is one, whatever the provider
+::  says, and a chat model is not
+::
+++  test-speech-named
+  =/  rows=(list model-row:arm)
+    :~  ['box/whisper-1' 'box' 'whisper-1' 0 0 0 0 | ~]
+        ['gpt-4o-mini-transcribe' 'oa' 'gpt-4o-mini-transcribe' 0 0 0 0 | ~]
+        ['Systran/faster-Whisper-large' 'box' 'Systran/faster-Whisper-large' 0 0 0 0 | ~]
+        ['llama3.1:8b' 'box' 'llama3.1:8b' 0 0 0 0 | ~]
+    ==
+  %+  expect-eq
+    !>(`(set @t)`(silt ~['whisper-1' 'gpt-4o-mini-transcribe' 'Systran/faster-Whisper-large']))
+  !>((speech-named:arm rows))
 ::  ==  an upstream answer
 ::
 ++  test-read-usage

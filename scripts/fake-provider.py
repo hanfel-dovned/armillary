@@ -158,6 +158,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send(200, {"data": SPEECH})
             return
+        if self.path.rstrip("/") == "/box/v1/models":
+            # a server that is not OpenRouter: its whisper model sits in
+            # the one list with its chat model, marked as nothing
+            self.send(200, {"data": [{"id": "whisper-1"}, {"id": "llama3.1:8b"}]})
+            return
         if self.path.rstrip("/") == "/v1/models":
             if not self.bearer_ok():
                 self.send(401, {"error": {"message": "bad key"}})
