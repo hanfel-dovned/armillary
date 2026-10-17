@@ -4283,13 +4283,16 @@
   ::  chat catalog lists; every other tier must be a model sold here
   =/  bad=@t  (unsold:arm (~(del by tiers.p.got) 'decision') sold)
   ?.  =('' bad)  (send-err eyre-id 400 (rap 3 'tiers: ' bad ' is not in the catalog' ~))
-  ::  and the decisions API is OpenRouter's, so a decision model with no
-  ::  OpenRouter provider here is one nothing can run
+  ::  and a decision model that is no chat model sold here is one of the
+  ::  decisions API's, which is OpenRouter's, so with no OpenRouter
+  ::  provider nothing could run it
   ;<  pm=(map @t provider:arm)  bind:m  (providers-of 1)
-  ?:  ?&  (~(has by tiers.p.got) 'decision')
+  =/  dm=(unit @t)  (~(get by tiers.p.got) 'decision')
+  ?:  ?&  ?=(^ dm)
+          !(~(has in sold) u.dm)
           !(lien ~(val by pm) |=(p=provider:arm ?=(%openrouter kind.p)))
       ==
-    (send-err eyre-id 400 'tiers: decision needs an OpenRouter provider, since the decisions API is OpenRouter\'s')
+    (send-err eyre-id 400 'tiers: decision is a chat model the catalog sells, or a decisions model on an OpenRouter provider')
   ;<  ~  bind:m
     %+  poke-writer  1
     %-  pairs:enjs:format
@@ -5054,10 +5057,12 @@
   (send-raw eyre-id status.res body.res)
 ::  +serve-decisions: OpenRouter's decisions route, gated and charged
 ::  like the proxy. The model must be the decision tier this vendor
-::  suggests, which no chat catalog lists, so the route is no way to
-::  reach any other model. It goes to the lease provider, else an
-::  OpenRouter provider, and is charged the cost OpenRouter reports at
-::  the markup; an answer that reports none is refused, not given free.
+::  suggests, so the route is no way to reach any other model. A chat
+::  model the catalog sells is asked through its own provider
+::  (+decide-on-chat). Any other name is a decisions model: it goes to
+::  the lease provider, else an OpenRouter provider, and is charged the
+::  cost OpenRouter reports at the markup; an answer that reports none
+::  is refused, not given free.
 ::
 ++  serve-decisions
   |=  [eyre-id=@ta act=actor jon=json]
@@ -5072,10 +5077,14 @@
     (send-err eyre-id 404 (rap 3 'model: decisions are offered on ' model ' only' ~))
   ;<  s=settings:arm  bind:m  (settings-of 1)
   ;<  pm=(map @t provider:arm)  bind:m  (providers-of 1)
+  ;<  cat=(list model-row:arm)  bind:m  (catalog-of 1)
+  =/  row=(unit model-row:arm)  (find-model:arm cat model)
+  =/  chat=(unit provider:arm)  ?~(row ~ (~(get by pm) provider.u.row))
   =/  routers=(list provider:arm)
     (skim ~(val by pm) |=(p=provider:arm ?=(%openrouter kind.p)))
   =/  lp=(unit provider:arm)  (~(get by pm) lease-provider.s)
   =/  p=(unit provider:arm)
+    ?^  chat  chat
     ?:  &(?=(^ lp) ?=(%openrouter kind.u.lp))  lp
     ?~(routers ~ `i.routers)
   ?~  p  (send-err eyre-id 404 'decisions: not offered')
@@ -5085,6 +5094,8 @@
   ?~  a  (send-err eyre-id 403 'forbidden')
   ?:  &(!free |(!(syn:si balance.u.a) =(--0 balance.u.a)))
     (send-err eyre-id 402 'balance: empty')
+  ?:  &(?=(^ row) ?=(^ chat))
+    (decide-on-chat eyre-id ship.act markup.s free u.row u.p jon)
   ;<  res=[status=@ud body=@t]  bind:m
     (post-json (decisions-url:arm base-url.u.p) api-key.u.p jon ~m2)
   ?:  =(0 status.res)
@@ -5111,6 +5122,65 @@
         ['ref' s+(gs:arm answer 'id')]
     ==
   (send-raw eyre-id status.res body.res)
+::  +decide-on-chat: a decision asked of a chat model through its own
+::  provider, as one completion asking for JSON (+decision-chat), and
+::  answered in the decisions API's shape. A reply with no usable
+::  answer for every question is 502 and charges nothing. The charge is
+::  the proxy's: OpenRouter's reported cost at the markup, else tokens
+::  at the catalog's prices.
+::
+++  decide-on-chat
+  |=  [eyre-id=@ta who=@p markup=@ud free=? row=model-row:arm p=provider:arm jon=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  router=?  ?=(%openrouter kind.p)
+  ;<  res=[status=@ud body=@t]  bind:m
+    %:  post-json
+      (join-url base-url.p '/chat/completions')
+      api-key.p
+      (decision-chat:arm upstream.row jon router)
+      ~m2
+    ==
+  ?:  =(0 status.res)
+    (send-err eyre-id 504 (rap 3 'no answer from ' name.p ' within two minutes' ~))
+  ?.  (two-xx status.res)
+    =/  parsed=(unit json)  (de:json:html body.res)
+    ?^  parsed  (send-raw eyre-id status.res body.res)
+    (send-err eyre-id status.res (rap 3 name.p ' answered ' (crip (a-co:co status.res)) ~))
+  =/  answers=(unit json)  (decision-answers:arm (gj:arm jon 'questions') body.res)
+  ?~  answers
+    (send-err eyre-id 502 (rap 3 id.row ' gave no usable answer to every question' ~))
+  =/  toks=[in=@ud out=@ud]  (fall (read-usage:arm body.res) [0 0])
+  =/  priced=(unit @ud)  ?.(router ~ (read-cost:aopen body.res))
+  =/  bill=[amount=@ud cost=@ud]
+    ?^  priced  [(debit-for:aopen u.priced 0 markup) u.priced]
+    :-  (add (charge:arm in.toks in.row) (charge:arm out.toks out.row))
+    (add (charge:arm in.toks cost-in.row) (charge:arm out.toks cost-out.row))
+  =/  ref=@t  (gs:arm (fall (de:json:html body.res) ~) 'id')
+  ;<  ~  bind:m
+    ?:  free  (pure:(fiber:fiber:nexus ,~) ~)
+    %+  poke-writer  1
+    %-  pairs:enjs:format
+    :~  ['op' s+'debit']
+        ['ship' s+(scot %p who)]
+        ['amount' (numb:enjs:format amount.bill)]
+        ['cost' (numb:enjs:format cost.bill)]
+        ['model' s+id.row]
+        ['in' (numb:enjs:format in.toks)]
+        ['out' (numb:enjs:format out.toks)]
+        ['mode' s+'proxy']
+        ['ref' s+ref]
+    ==
+  %^  send-json  eyre-id  200
+  %-  pairs:enjs:format
+  :~  ['id' s+ref]
+      ['answers' u.answers]
+      :-  'usage'
+      %-  pairs:enjs:format
+      :~  ['input_tokens' (numb:enjs:format in.toks)]
+          ['output_tokens' (numb:enjs:format out.toks)]
+      ==
+  ==
 ::  ==  Talon's routes, on the customer ship
 ::
 ::  +nap: park this fiber for a span. Only a request fiber uses it, and

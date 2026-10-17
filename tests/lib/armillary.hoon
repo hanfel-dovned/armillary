@@ -255,6 +255,52 @@
     (expect-eq !>(`(list @t)`~['stub/alpha' 'stub/alpha' 'stub/beta']) !>(ups))
     (expect-eq !>(got) !>((merge-import:arm got fresh)))
   ==
+::  a decision on a chat model: the request goes as one chat completion,
+::  the provider rule and the cost ask only to OpenRouter
+::
+++  test-decision-chat
+  =/  req=json  (jo '{"model":"box/d","state":{"x":1},"questions":{"q":{"type":"noul"}},"provider":{"zdr":true}}')
+  =/  other=json  (decision-chat:arm 'llama3' req |)
+  =/  router=json  (decision-chat:arm 'llama3' req &)
+  =/  msgs=(list json)  (ga:arm other 'messages')
+  =/  user=json  ?.(?=([* * ~] msgs) ~ (fall (de:json:html (gs:arm i.t.msgs 'content')) ~))
+  ;:  weld
+    (expect-eq !>('llama3') !>((gs:arm other 'model')))
+    (expect-eq !>(`@ud`2) !>((lent msgs)))
+    (expect-eq !>((jo '{"x":1}')) !>((gj:arm user 'state')))
+    (expect-eq !>((jo '{"q":{"type":"noul"}}')) !>((gj:arm user 'questions')))
+    (expect !>(!(has-key:arm other 'provider')))
+    (expect !>(!(has-key:arm other 'usage')))
+    (expect-eq !>((jo '{"zdr":true}')) !>((gj:arm router 'provider')))
+    (expect-eq !>(b+&) !>((gj:arm (gj:arm router 'usage') 'include')))
+  ==
+::  the answers out of a chat reply: past a think block and prose, each
+::  checked against its question, and nothing when any one fails
+::
+++  test-decision-answers
+  =/  qs=json
+    (jo '{"u":{"type":"noul"},"k":{"type":"choice","criteria":{"circumstance":"a","feeling":"b"}}}')
+  =/  reply
+    |=  content=@t
+    (en:json:html (pairs:enjs:format ~[['choices' a+~[(pairs:enjs:format ~[['message' (pairs:enjs:format ~[['content' s+content]])]])]]]))
+  =/  good=@t
+    '<think>{"no": 1}</think>Sure: {"u": {"noul": 0.8}, "k": {"choice": "feeling", "probabilities": {"feeling": 0.7, "circumstance": 0.3}}} done'
+  =/  want=json
+    (jo '{"u":{"noul":0.8},"k":{"choice":"feeling","probabilities":{"feeling":0.7,"circumstance":0.3}}}')
+  ;:  weld
+    (expect-eq !>(`(unit json)``want) !>((decision-answers:arm qs (reply good))))
+    %+  expect-eq  !>(`(unit json)``(jo '{"u":{"noul":1},"k":{"choice":"circumstance","probabilities":{"circumstance":1}}}'))
+    !>((decision-answers:arm qs (reply '{"u":{"noul":true},"k":{"choice":"circumstance"}}')))
+    (expect-eq !>(`(unit json)`~) !>((decision-answers:arm qs (reply '{"u":{"noul":1.5},"k":{"choice":"feeling"}}'))))
+    (expect-eq !>(`(unit json)`~) !>((decision-answers:arm qs (reply '{"u":{"noul":0.2},"k":{"choice":"anger"}}'))))
+    (expect-eq !>(`(unit json)`~) !>((decision-answers:arm qs (reply '{"u":{"noul":0.2}}'))))
+    (expect-eq !>(`(unit json)`~) !>((decision-answers:arm qs (reply 'I cannot decide.'))))
+  ==
+++  test-unit-interval
+  ;:  weld
+    (expect !>((levy `(list @t)`~['0' '1' '0.25' '1.0' '1.000' '0.'] unit-interval:arm)))
+    (expect !>((levy `(list @t)`~['-0.1' '1.5' '2' '8e-1' '' '01'] |=(t=@t !(unit-interval:arm t)))))
+  ==
 ::  a model named for speech to text is one, whatever the provider
 ::  says, and a chat model is not
 ::

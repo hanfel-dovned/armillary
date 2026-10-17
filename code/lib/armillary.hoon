@@ -645,6 +645,109 @@
   ?.  &(=(provider provider.r) (~(has in ids) upstream.r))  r
   ?:  (is-transcription r)  r
   r(tags (snoc tags.r 'transcription'))
+::  ==  a decision on a chat model
+::
+::  The decisions API (state plus typed questions, answers with their
+::  probabilities) is OpenRouter's, for its decision models. A decision
+::  tier that names a chat model the catalog sells is asked through
+::  that model's provider instead: one chat completion asking for the
+::  answers as JSON, read back into the decisions API's shape, so an app
+::  calls one route either way. ponytail: the model states its own
+::  probabilities; a server that reports logprobs could give truer ones.
+::
+++  decision-prompt
+  ^-  @t
+  %+  rap  3
+  :~  'You answer typed questions about a state. Reply with one JSON object and nothing else, '
+      'with one entry per question key. A noul question gets {"noul": p}, p the probability '
+      'from 0 to 1 that the answer is yes. A choice question gets {"choice": c, "probabilities": '
+      '{option: p, ...}}, c one of its options, which are the keys of its criteria or the '
+      'strings in its options, and the probabilities summing to 1. Read each question\'s '
+      'instructions and criteria, and judge from the state alone.'
+  ==
+::  +decision-chat: a decisions request as that chat completion. On an
+::  OpenRouter provider the caller's provider rule rides along and the
+::  cost is asked for; another server is sent nothing it may refuse.
+::
+++  decision-chat
+  |=  [upstream=@t jon=json router=?]
+  ^-  json
+  =/  ask=json
+    (pairs:enjs:format ~[['state' (gj jon 'state')] ['questions' (gj jon 'questions')]])
+  =/  base=(list [@t json])
+    :~  ['model' s+upstream]
+        ['temperature' (numb:enjs:format 0)]
+        :-  'messages'
+        :-  %a
+        :~  (pairs:enjs:format ~[['role' s+'system'] ['content' s+decision-prompt]])
+            (pairs:enjs:format ~[['role' s+'user'] ['content' s+(en:json:html ask)]])
+        ==
+    ==
+  =/  pro=json  (gj jon 'provider')
+  =?  base  &(router ?=([%o *] pro))  (snoc base ['provider' pro])
+  =?  base  router  (snoc base ['usage' (pairs:enjs:format ~[['include' b+&]])])
+  (pairs:enjs:format base)
+::  +decision-answers: the answers out of a chat reply to +decision-chat,
+::  one per question asked, each in the decisions API's shape, or ~ when
+::  any question has none. A think block before the object and prose
+::  around it are skipped.
+::
+++  decision-answers
+  |=  [questions=json body=@t]
+  ^-  (unit json)
+  ?.  ?=([%o *] questions)  ~
+  =/  cs=(list json)  (ga (fall (de:json:html body) ~) 'choices')
+  ?~  cs  ~
+  =/  text=tape  (trip (gs (gj i.cs 'message') 'content'))
+  =/  think=(unit @ud)  (find "</think>" text)
+  =?  text  ?=(^ think)  (slag (add u.think 8) text)
+  =/  open=(unit @ud)  (find (trip '{') text)
+  =/  back=(unit @ud)  (find (trip '}') (flop text))
+  ?:  |(?=(~ open) ?=(~ back))  ~
+  =/  stop=@ud  (sub (lent text) u.back)
+  ?:  (lte stop u.open)  ~
+  =/  got=(unit json)  (de:json:html (crip (swag [u.open (sub stop u.open)] text)))
+  ?~  got  ~
+  =|  out=(list [@t json])
+  =/  todo=(list [k=@t q=json])  ~(tap by p.questions)
+  |-  ^-  (unit json)
+  ?~  todo  `[%o (malt out)]
+  =/  a=(unit json)  (decision-answer q.i.todo (gj u.got k.i.todo))
+  ?~  a  ~
+  $(todo t.todo, out [[k.i.todo u.a] out])
+::  +decision-answer: one answer checked against its question
+::
+++  decision-answer
+  |=  [q=json a=json]
+  ^-  (unit json)
+  ?:  =('noul' (gs q 'type'))
+    =/  p=json  (gj a 'noul')
+    =?  p  ?=([%b *] p)  [%n ?:(p.p '1' '0')]
+    ?.  &(?=([%n *] p) (unit-interval p.p))  ~
+    `(pairs:enjs:format ~[['noul' p]])
+  =/  c=@t  (gs a 'choice')
+  ?:  =('' c)  ~
+  =/  crit=json  (gj q 'criteria')
+  =/  opts=(list @t)
+    ?:  ?=([%o *] crit)  ~(tap in ~(key by p.crit))
+    (strings (ga q 'options'))
+  ?:  &(?=(^ opts) =(~ (find ~[c] opts)))  ~
+  =/  probs=json  (gj a 'probabilities')
+  =?  probs  !?=([%o *] probs)  (pairs:enjs:format ~[[c [%n '1']]])
+  `(pairs:enjs:format ~[['choice' s+c] ['probabilities' probs]])
+::  +unit-interval: a JSON number's text from 0 to 1, read by its shape
+::  alone: 0, 1, 1.0 and 0.x pass, a sign, an exponent or 1.5 do not
+::
+++  unit-interval
+  |=  t=@t
+  ^-  ?
+  =/  s=tape  (trip t)
+  ?:  |(=("0" s) =("1" s))  &
+  ?.  ?=([@ @ *] s)  |
+  ?.  =('.' i.t.s)  |
+  ?:  =('0' i.s)  (levy t.t.s |=(c=@ &((gte c '0') (lte c '9'))))
+  ?:  =('1' i.s)  (levy t.t.s |=(c=@ =('0' c)))
+  |
 ::  +speech-named: the upstream ids among .rows whose name says speech
 ::  to text, the way Talon tells them. A provider that is not
 ::  OpenRouter lists its whisper models with its chat models and marks

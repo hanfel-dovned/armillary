@@ -297,6 +297,31 @@ class Handler(BaseHTTPRequestHandler):
             return
         if model == "stub/slow":
             time.sleep(130)
+        if model in ("stub/decider", "stub/badjson"):
+            # a chat model asked for decisions: the answers as JSON after
+            # a think block and among prose, the way a local model writes
+            # them; badjson answers in words alone
+            asked = {}
+            for message in body.get("messages") or []:
+                if message.get("role") == "user":
+                    try:
+                        asked = json.loads(message.get("content") or "{}").get("questions") or {}
+                    except ValueError:
+                        asked = {}
+            answers = {}
+            for k, q in asked.items():
+                if q.get("type") == "noul":
+                    answers[k] = {"noul": 0.8}
+                else:
+                    opts = sorted((q.get("criteria") or {}).keys()) or q.get("options") or ["x"]
+                    answers[k] = {"choice": opts[0], "probabilities": {o: (0.9 if i == 0 else 0.1) for i, o in enumerate(opts)}}
+            text = ("<think>weighing it</think>Here are the answers: " + json.dumps(answers) + " Done."
+                    if model == "stub/decider" else "I would rather not decide.")
+            STATE["n"] += 1
+            self.send(200, {"id": "stub-%d" % STATE["n"], "model": model,
+                            "choices": [{"message": {"role": "assistant", "content": text}}],
+                            "usage": {"prompt_tokens": 40, "completion_tokens": 20}})
+            return
         last = ""
         for message in body.get("messages") or []:
             if message.get("role") == "user":

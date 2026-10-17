@@ -100,7 +100,7 @@
   // feature maps onto it
   var TIERS = [
     ['frontier', 'Frontier'],
-    ['decision', 'Decision (the decisions API)'],
+    ['decision', 'Decision (Jev, or any chat model)'],
     ['zdr', 'ZDR (keeps no data)'],
     ['private', 'Private'],
     ['transcription', 'Transcription (speech to text)'],
@@ -203,8 +203,9 @@
   // +suggestedCard: the tiers this vendor fills and the tier each feature
   // of its customers' apps uses. An app following it switches when the
   // revision moves.
-  // .router: this ship has an OpenRouter provider, which the decisions
-  // API needs; without one the decision tier offers nothing
+  // .router: this ship has an OpenRouter provider, which Jev and the
+  // decisions API need; without one the decision tier offers the chat
+  // models alone, which the ship asks for JSON answers
   function suggestedCard(rows, router) {
     var zdrNote = function (r) { return (r.tags || []).indexOf('zdr') >= 0 ? 'ZDR' : ''; };
     var stt = function (r) { return (r.tags || []).indexOf('transcription') >= 0; };
@@ -228,11 +229,11 @@
       // other tier offers them
       var speech = t[0] === 'transcription';
       var fits = function (m) { return !!m.stt === speech; };
+      var chats = sold.filter(function (m) { return m.id !== 'typesafe/jev-1.13' && !m.stt; });
       var models = t[0] !== 'decision' ? sold.concat(unsold).filter(fits)
-        : !router ? []
-        : [{ id: 'typesafe/jev-1.13', note: 'decisions' }].concat(sold.filter(function (m) { return m.id !== 'typesafe/jev-1.13' && !m.stt; }));
+        : router ? [{ id: 'typesafe/jev-1.13', note: 'decisions' }].concat(chats) : chats;
       var field = modelBox('tier-' + t[0], 'data-tier="' + t[0] + '"', cur, models,
-        t[0] !== 'decision' ? 'search, or type a model id' : router ? 'typesafe/jev-1.13' : 'needs an OpenRouter provider');
+        t[0] !== 'decision' ? 'search, or type a model id' : router ? 'typesafe/jev-1.13' : 'a chat model the catalog sells');
       out += '<div class="field wide"><label for="tier-' + t[0] + '">' + esc(t[1]) + '</label>' + field + '</div>';
     });
     out += '</div><h3>Features</h3><div class="inline">';
