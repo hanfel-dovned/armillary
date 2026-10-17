@@ -4283,6 +4283,13 @@
   ::  chat catalog lists; every other tier must be a model sold here
   =/  bad=@t  (unsold:arm (~(del by tiers.p.got) 'decision') sold)
   ?.  =('' bad)  (send-err eyre-id 400 (rap 3 'tiers: ' bad ' is not in the catalog' ~))
+  ::  and the decisions API is OpenRouter's, so a decision model with no
+  ::  OpenRouter provider here is one nothing can run
+  ;<  pm=(map @t provider:arm)  bind:m  (providers-of 1)
+  ?:  ?&  (~(has by tiers.p.got) 'decision')
+          !(lien ~(val by pm) |=(p=provider:arm ?=(%openrouter kind.p)))
+      ==
+    (send-err eyre-id 400 'tiers: decision needs an OpenRouter provider, since the decisions API is OpenRouter\'s')
   ;<  ~  bind:m
     %+  poke-writer  1
     %-  pairs:enjs:format

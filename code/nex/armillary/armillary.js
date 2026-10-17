@@ -203,7 +203,9 @@
   // +suggestedCard: the tiers this vendor fills and the tier each feature
   // of its customers' apps uses. An app following it switches when the
   // revision moves.
-  function suggestedCard(rows) {
+  // .router: this ship has an OpenRouter provider, which the decisions
+  // API needs; without one the decision tier offers nothing
+  function suggestedCard(rows, router) {
     var zdrNote = function (r) { return (r.tags || []).indexOf('zdr') >= 0 ? 'ZDR' : ''; };
     var stt = function (r) { return (r.tags || []).indexOf('transcription') >= 0; };
     var sold = rows.filter(function (r) { return r.enabled; }).map(function (r) { return { id: r.id, name: r.name, provider: r.provider, note: zdrNote(r), stt: stt(r) }; });
@@ -226,11 +228,11 @@
       // other tier offers them
       var speech = t[0] === 'transcription';
       var fits = function (m) { return !!m.stt === speech; };
-      var models = t[0] === 'decision'
-        ? [{ id: 'typesafe/jev-1.13', note: 'decisions' }].concat(sold.filter(function (m) { return m.id !== 'typesafe/jev-1.13' && !m.stt; }))
-        : sold.concat(unsold).filter(fits);
+      var models = t[0] !== 'decision' ? sold.concat(unsold).filter(fits)
+        : !router ? []
+        : [{ id: 'typesafe/jev-1.13', note: 'decisions' }].concat(sold.filter(function (m) { return m.id !== 'typesafe/jev-1.13' && !m.stt; }));
       var field = modelBox('tier-' + t[0], 'data-tier="' + t[0] + '"', cur, models,
-        t[0] === 'decision' ? 'typesafe/jev-1.13' : 'search, or type a model id');
+        t[0] !== 'decision' ? 'search, or type a model id' : router ? 'typesafe/jev-1.13' : 'needs an OpenRouter provider');
       out += '<div class="field wide"><label for="tier-' + t[0] + '">' + esc(t[1]) + '</label>' + field + '</div>';
     });
     out += '</div><h3>Features</h3><div class="inline">';
@@ -271,7 +273,7 @@
     var kept = rankModels(filter, rows);
     var out = '<h1>Catalog</h1>';
     if (!rows.length) return out + '<p class="muted">Nothing in the catalog. Import from a provider first.</p>';
-    out += suggestedCard(rows);
+    out += suggestedCard(rows, myRouter);
     out += braveCard(myBrave);
     // the filter sits on its own table: above the two cards, what it found
     // was two screens down, and typing seemed to do nothing
@@ -1111,6 +1113,7 @@
   var myCheckouts = {};                // the checkout rows that view last held
   var mySuggested = { rev: 0, tiers: {}, features: {}, models: {} };   // the AI this vendor drives
   var myBrave = { key_set: false, searches: {} };   // the vendor's Brave settings, without the key
+  var myRouter = false;                              // an OpenRouter provider is set up, for the decision tier
   var watchSaid = { text: '', cls: '' };    // the line the Balance card shows
   var render = {
     esc: esc, dollars: dollars, micro: micro, margin: margin,
@@ -1442,7 +1445,10 @@
           mySuggested = sg || mySuggested;
           return api('/brave').catch(function () { return myBrave; }).then(function (bv) {
             myBrave = bv || myBrave;
-            draw(catalog(catRows, catFilter));
+            return api('/providers').catch(function () { return null; }).then(function (pv) {
+              if (pv) myRouter = pv.some(function (p) { return p.kind === 'openrouter'; });
+              draw(catalog(catRows, catFilter));
+            });
           });
         });
       });

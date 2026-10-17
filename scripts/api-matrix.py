@@ -229,6 +229,9 @@ curl('PUT', API + '/settings', {'markup_pct': MARKUP, 'min_topup': 5000000, 'pub
                                 'mode': 'stub', 'refuse_comets': False})
 settle()
 
+code, d = curl('PUT', API + '/suggested', {'tiers': {'decision': 'typesafe/jev-1.13'}, 'features': {}})
+check('a decision tier with no OpenRouter provider is 400', code == 400 and 'OpenRouter provider' in err_of(d), (code, d))
+
 print('providers')
 prov = {'id': 'stub', 'name': 'Stub', 'kind': 'openrouter',
         'base_url': STUB + '/v1', 'api_key': 'stub-key', 'provisioning_key': 'prov-key'}
