@@ -190,6 +190,12 @@ That is also how an owner runs their own inference for Talon and Orrery instead 
 
 Live updates come from the instance's change beacon, streamed through grubbery's keep-SSE at `/grubbery/api/keep/apps/shell.shell/desks/armillary.desk/desk/data/armillary.armillary_app/beacon/rev`. It moves once per write that changed something, and a client that sees it move refetches what it shows. A write answers before the writer applies it, so a read right after one may still be a moment behind.
 
+### Version 37: checkouts and payments in seconds
+
+- **A small status file.** A customer read its whole account view on every pass, 13 KB stored, which grubbery sends in a second round trip and in pieces: 14 to 27 s from ricsul to ~nisfeb, against 1.5 s for a small file. The vendor now also writes `status.json` (the view less the daily series, the newest 20 ledger rows and the checkouts open or of the last day) and `history.json` (the 50 ledger rows and the daily series). A pass reads the status; the Data view asks `GET /api/account?history=1`. `view.json` stays whole for customers from before.
+- **The vendor tells the customer.** After writing an account's view, except for a plain charge, the writer has `/push.sig` nudge the customer's inbox, and the customer reads its status at once instead of within five minutes. It uses the inbox road every install already lays, so it asks no new permission.
+- **A payment moves the lease at once.** Every credit (card, invoice, bitcoin, stub or owner) prods the tick to read that account's lease and move its cap, or give a paying account its first lease, instead of leaving it disabled or at the old cap for up to ten minutes.
+
 ### Version 36: what the 2026-10-17 review fixed
 
 - **A payment is credited once, however old.** Compaction folds only charges; a credit or refund row, and its ref, is kept for ever, and a checkout already marked paid is never credited again. Compaction also converges: a month's charges end as one summary row. A paid checkout row is kept for good, since a dispute or a refund months on finds its payment by it; any other finished row goes a month after its window, and a view carries only the last thirty days.
