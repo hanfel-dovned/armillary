@@ -930,11 +930,10 @@ nonce = dictish(co).get('nonce', '')
 check('a top-up checkout answers a stub pay url', code == 200 and '/pay/stub' in url, (code, co))
 code, d = curl('POST', HOST + '/apps/armillary/pay/stub', {'ship': CUST, 'nonce': nonce})
 check('paying it answers paid', code == 200 and str(d).strip() == 'paid', (code, d))
-settle(2)
-tick()
+# no tick here: the credit itself has the tick move this lease
 view = wait_view(PEER, PJAR, lambda v: dictish(v.get('lease')).get('disabled') is False, tries=10)
 lv = dictish(view.get('lease'))
-check('the lease is enabled again', lv.get('disabled') is False, lv)
+check('the lease is enabled again by the payment, with no tick', lv.get('disabled') is False, lv)
 check('with a cap above what it has already spent',
       lv.get('limit', 0) > lv.get('usage', 0), lv)
 code, rec = stub_key(LHASH)
@@ -944,6 +943,44 @@ check('and the provider has the higher cap',
 code, inf = curl('GET', api(PEER) + '/inference', jar=PJAR, timeout=120)
 check('the inference config is lease mode again',
       dictish(inf).get('mode') == 'lease', inf)
+
+print('the vendor tells the customer')
+# the stored account, read with no fresh=1: only a push moves it this
+# fast, since the client's own pass comes every five minutes
+def stored(host, jar):
+    code, d = curl('GET', api(host) + '/account', jar=jar)
+    return dictish(d)
+BAL_P = dictish(fresh(PEER, PJAR)).get('balance', 0)
+settle(2)
+code, d = curl('POST', api(HOST) + '/accounts/' + CUST + '/credit',
+               {'amount': 1000000, 'note': 'push check'}, jar=JAR)
+check('the owner credits the customer a dollar', code == 200, (code, d))
+seen_at = None
+t0 = time.time()
+for _ in range(20):
+    if stored(PEER, PJAR).get('balance') == BAL_P + 1000000:
+        seen_at = time.time() - t0
+        break
+    settle(1)
+check('the customer\'s stored balance moves within seconds, unasked',
+      seen_at is not None, (BAL_P + 1000000, stored(PEER, PJAR).get('balance')))
+print('     the push landed in %.1f s' % (seen_at or -1))
+code, d = curl('POST', api(HOST) + '/accounts/' + CUST + '/refund',
+               {'amount': 1000000, 'note': 'push check back'}, jar=JAR)
+check('and the dollar goes back', code == 200, (code, d))
+mine = stored(PEER, PJAR)
+check('the stored account is the status: twenty ledger rows at most, no daily series',
+      len(mine.get('ledger', [])) <= 20 and 'daily' not in mine,
+      (len(mine.get('ledger', [])), sorted(mine.keys())))
+code, h = curl('GET', api(PEER) + '/account?history=1', jar=PJAR, timeout=120)
+check('?history=1 adds the daily series and the whole ledger from the vendor',
+      code == 200 and dictish(dictish(h).get('daily')).get('days') == 90
+      and len(dictish(h).get('ledger', [])) >= len(mine.get('ledger', [])),
+      (code, dictish(dictish(h).get('daily')).get('days'), len(dictish(h).get('ledger', []))))
+status = dictish(json.loads(raw(HOST, JAR, '/accounts/' + CUST + '/status.json') or '{}'))
+check('the vendor\'s status file leaves the daily series and most of the ledger out',
+      status.get('ship') == CUST and 'daily' not in status and len(status.get('ledger', [])) <= 20,
+      (status.get('ship'), sorted(status.keys())))
 
 print('a disputed payment')
 code, d = settings(HOST, JAR, stripe_key='', stripe_webhook_secret='', stripe_url=SSTUB,
@@ -995,7 +1032,10 @@ check('the top-up puts the balance back above zero',
       view.get('balance', 0) > 0, view.get('balance'))
 code, d = curl('POST', v1(HOST) + '/chat/completions',
                {'model': 'stub/alpha', 'messages': message('hi')}, bearer=PSECRET, timeout=120)
-check('and a completion is 200 again', code == 200, (code, str(d)[:200]))
+# the top-up moved the lease at once, so the proxy points to it, as it
+# does for any account whose live lease holds its balance
+check('and the proxy points to the lease the top-up turned back on',
+      code == 402 and 'held by your lease' in err_of(d), (code, str(d)[:200]))
 settings(HOST, JAR, stripe_key='', stripe_webhook_secret='', stripe_url=SSTUB,
          lease_provider='stub')
 settle(2)
@@ -1053,9 +1093,9 @@ check('the vendor\'s data names the customer with today\'s spend', mine and dict
 stub_credits = [dictish(p).get('credits') for p in (dv.get('providers') or []) if dictish(p).get('id') == 'stub']
 check('and what the provider\'s account has left, read with its provisioning key',
       stub_credits and dictish(stub_credits[0]).get('total') == 50 and dictish(stub_credits[0]).get('used') == 10.5, stub_credits)
-view = fresh(PEER, PJAR)
-daily = dictish(view.get('daily'))
-check('the customer\'s view carries ninety days of its use, today\'s spend in the last',
+code, view = curl('GET', api(PEER) + '/account?history=1', jar=PJAR, timeout=120)
+daily = dictish(dictish(view).get('daily'))
+check('the customer\'s history carries ninety days of its use, today\'s spend in the last',
       daily.get('days') == 90 and len(daily.get('series') or []) == 90 and dictish((daily.get('series') or [{}])[-1]).get('spent', 0) > 0, {k: daily.get(k) for k in ('days', 'from')})
 check('and never the provider\'s cost', 'cost' not in dictish((daily.get('series') or [{}])[-1]), (daily.get('series') or [{}])[-1])
 models = [t.get('model') for t in (r.get('top_models') or [])]

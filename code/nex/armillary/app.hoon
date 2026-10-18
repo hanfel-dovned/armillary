@@ -91,6 +91,7 @@
           [%fall %& [/ %'inbox.sig'] [[/ %sig] ~]]
           [%fall %& [/ %'client.sig'] [[/ %sig] ~]]
           [%fall %& [/ %'tick.sig'] [[/ %sig] ~]]
+          [%fall %& [/ %'push.sig'] [[/ %sig] ~]]
           [%fall %| /requests empty-dir:loader]
           [%fall %| /accounts empty-dir:loader]
           [%fall %| /tr empty-dir:loader]
@@ -161,7 +162,7 @@
         ::  at the root can grant a road at the root
         ;<  ~  bind:m  lay-inbox-road
         |-
-        ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-from:io
+        ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-quiet
         ;<  our=@p  bind:m  get-our:io
         ::  a poke with no ship is our own client, from inside this
         ::  nexus; any other grub on this ship is not a customer
@@ -182,6 +183,13 @@
           [~ %'tick.sig']
         ;<  ~  bind:m  (rise prod %'tick.sig' %'tick.sig' 0)
         (tick-round |)
+          ::  the vendor's pushes: told by the writer whose view it wrote,
+          ::  it nudges that customer's inbox, and the customer reads its
+          ::  view at once instead of on its next pass. It waits on
+          ::  nothing, so the writer that pokes it is never held.
+          [~ %'push.sig']
+        ;<  ~  bind:m  (rise prod %'push.sig' %'push.sig' 0)
+        push-loop
           ::  one ephemeral fiber per in-flight request
           [[%requests ~] @]
         ::  one row for every request fiber, so the record stays bounded;
@@ -549,8 +557,22 @@
   ^-  form:m
   ;<  base=(unit path)  bind:m  self-base
   ?~  base  (pure:m ~)
-  =/  road=road:tarball  [%& %& (weld u.base (acct-dir who)) %'view.json']
-  (ug-set (group-name:arm who) (sy who ~) (sy road ~) ~)
+  =/  dir=path  (weld u.base (acct-dir who))
+  =/  roads=(set road:tarball)
+    (sy [%& %& dir %'view.json'] [%& %& dir %'status.json'] [%& %& dir %'history.json'] ~)
+  (ug-set (group-name:arm who) (sy who ~) roads ~)
+::  +group-current: is this account's group laid, with the status road
+::
+++  group-current
+  |=  who=@p
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  ex=?  bind:m  (group-exists who)
+  ?.  ex  (pure:m |)
+  ;<  base=(unit path)  bind:m  self-base
+  ?~  base  (pure:m &)
+  ;<  w=weir:nexus  bind:m  (ug-read-weir (group-dir who))
+  (pure:m (~(has in peek.w) [%& %& (weld u.base (acct-dir who)) %'status.json']))
 ::  +group-exists: has this account's group been laid yet
 ::
 ++  group-exists
@@ -1185,7 +1207,7 @@
   =/  new=row:arm
     [%debit amount.c cost.c model.c in.c out.c mode.c '' ref.c '' now]
   ;<  ~  bind:m  (write-row ship.c rows u.a new)
-  ;<  ~  bind:m  (do-write-view ship.c)
+  ;<  ~  bind:m  (write-view ship.c |)
   ;<  ~  bind:m  (note 'debit' & model.c who (new:si | amount.c))
   (pure:m &)
 ::  +do-add-key: one minted key. The row arrives hashed; the writer
@@ -1569,17 +1591,23 @@
 ::    there because the ship it belongs to is the only ship that may
 ::    peek this file.
 ::
-++  do-write-view
-  |=  who=@p
+++  do-write-view  |=(who=@p (write-view who &))
+::  +write-view: the view, and .push says whether the customer is told
+::  of it at once. A charge, one a call, is not: the customer reads it
+::  on its next pass.
+::
+++  write-view
+  |=  [who=@p push=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  aj=json  bind:m  (read-json (rf 0 (acct-dir who) %'account.json'))
   =/  a=(unit account:arm)  (de-account:arm aj)
   ?~  a  (pure:m ~)
   ::  a group refused or lost at rise is laid again here, so a view is
-  ::  never written that nobody may read
-  ;<  gex=?  bind:m  (group-exists who)
-  ;<  ~  bind:m  ?:(gex (pure:(fiber:fiber:nexus ,~) ~) (ensure-group who))
+  ::  never written that nobody may read, and one from before the
+  ::  status and history files gains their roads
+  ;<  current=?  bind:m  (group-current who)
+  ;<  ~  bind:m  ?:(current (pure:(fiber:fiber:nexus ,~) ~) (ensure-group who))
   ;<  keys=json  bind:m  (read-json (rf 0 (acct-dir who) %'keys.json'))
   =/  km=(map @t json)  ?:(?=([%o *] keys) p.keys ~)
   =/  key-rows=(list json)
@@ -1616,7 +1644,7 @@
         pend-rows
         lease
         (gs:arm lj 'error')
-        (recent-checkouts cj now)
+        (recent-checkouts cj now ~d30)
         newest
         (public-url-of sj)
         +((gn:arm old 'rev'))
@@ -1628,17 +1656,42 @@
   ::  take an app's own search away for nothing
   ;<  sug=json  bind:m  (read-json (rf 0 / %'suggested.json'))
   ;<  bj=json  bind:m  (read-json (rf 0 / %'brave.json'))
+  ::  ninety days of the account's use, a row a day, for its Data view:
+  ::  the ledger in the view is the newest fifty rows only
+  =/  daily=json  (daily-usage:arm (turn rows |=([n=@ta r=row:arm] r)) now 90 |)
   =/  vj=json  (en-view:arm v)
   =?  vj  ?=([%o *] vj)
     :-  %o
     %-  ~(gas by p.vj)
     :~  ['suggested' sug]
         ['search_offered' b+!=('' (gs:arm bj 'key'))]
-        ::  ninety days of the account's use, a row a day, for its Data
-        ::  view: the ledger in the view is the newest fifty rows only
-        ['daily' (daily-usage:arm (turn rows |=([n=@ta r=row:arm] r)) now 90 |)]
+        ['daily' daily]
     ==
-  (over:io (rf 0 (acct-dir who) %'view.json') [[/ %json] vj])
+  ::  status.json is what a customer reads on every pass: the view less
+  ::  the daily series, with the newest twenty ledger rows and the
+  ::  checkouts open or of the last day. Under grubbery's 8 KB inline
+  ::  limit a remote read is one round trip; the whole view took tens of
+  ::  seconds. history.json is the rest, for the Data view. view.json
+  ::  stays whole for customers from before the split.
+  =/  sj=json
+    ?.  ?=([%o *] vj)  vj
+    :-  %o
+    %-  ~(gas by (~(del by p.vj) 'daily'))
+    :~  ['ledger' a+(scag 20 newest)]
+        ['checkouts' (recent-checkouts cj now ~d1)]
+    ==
+  =/  hj=json
+    (pairs:enjs:format ~[['ledger' a+newest] ['daily' daily] ['rev' (gj:arm vj 'rev')]])
+  ;<  ~  bind:m  (over:io (rf 0 (acct-dir who) %'view.json') [[/ %json] vj])
+  ;<  ~  bind:m  (over:io (rf 0 (acct-dir who) %'status.json') [[/ %json] sj])
+  ;<  ~  bind:m  (over:io (rf 0 (acct-dir who) %'history.json') [[/ %json] hj])
+  ::  the customer is told at once, if it has spoken to us this week: a
+  ::  ship long gone would only gather nudges in ames
+  =/  recent=?  ?~(seen.u.a | (gth (add u.seen.u.a ~d7) now))
+  ?.  &(push recent)  (pure:m ~)
+  ;<  *  bind:m
+    (poke-soft:io (rf 0 / %'push.sig') [[/ %json] (pairs:enjs:format ~[['ship' s+(scot %p who)]])])
+  (pure:m ~)
 ::  +do-set-suggested: the vendor's suggested models, with a revision
 ::  that moves on every change, then every account's view written
 ::  again so each customer reads the new ones on its next pass. The
@@ -1929,11 +1982,11 @@
   ;<  ~  bind:m  (over:io (rf 0 (acct-dir u.who) %'holds.json') [[/ %json] [%o next]])
   (pure:m &)
 ::  +recent-checkouts: what a view carries of checkouts.json, the rows
-::  of the last thirty days and any still open. Paid rows are kept on
+::  of the last .window and any still open. Paid rows are kept on
 ::  file for good, and the view need not carry them all.
 ::
 ++  recent-checkouts
-  |=  [cj=json now=@da]
+  |=  [cj=json now=@da window=@dr]
   ^-  json
   ?.  ?=([%o *] cj)  cj
   :-  %o
@@ -1943,7 +1996,7 @@
   =/  status=@t  (gs:arm row 'status')
   ?:  |(=('pending' status) =('processing' status))  &
   =/  when=(unit @da)  (gt:arm row 'expires')
-  |(?=(~ when) (gth (add u.when ~d30) now))
+  |(?=(~ when) (gth (add u.when window) now))
 ::  +drop-holds: every account's holds let go, at a clean start
 ::
 ++  drop-holds
@@ -2806,6 +2859,60 @@
   ^-  ?
   %+  lien  ~(tap by pm)
   |=([id=@t j=json] =(nonce (gs:arm j 'nonce')))
+::  +take-poke-quiet: the next poke, as +take-poke-from:io takes it,
+::  dropping the answer to a poke this fiber sent without waiting: a
+::  long-lived fiber that left those queued would carry them forever
+::
+++  take-poke-quiet
+  =/  m  (fiber:fiber:nexus ,[from:fiber:nexus sage:tarball])
+  ^-  form:m
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %pack *]  [%wait ~]
+      [~ %veto *]  [%fail (veto-error:io dart.u.in)]
+      [~ %poke * *]  [%done [from sage]:u.in]
+  ==
+::  +push-loop: one nudge for each view the writer names, sent without
+::  waiting; whatever answers come back are dropped
+::
++$  push-in  $%([%push jon=json] [%drop ~])
+++  push-loop
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  |-
+  ;<  in=push-in  bind:m
+    |=  input:fiber:nexus
+    :+  ~  q.state
+    ?+  in  [%done %drop ~]
+        ~  [%wait ~]
+        [~ %poke * *]
+      ?.  &(=(0 p.from.u.in) =([/ %json] p.sage.u.in))  [%done %drop ~]
+      [%done %push (fall (mole |.(!<(json q.sage.u.in))) ~)]
+    ==
+  ?:  ?=(%drop -.in)  $
+  =/  who=(unit @p)  (slaw %p (gs:arm jon.in 'ship'))
+  ?~  who  $
+  ;<  our=@p  bind:m  get-our:io
+  ;<  ~  bind:m
+    ?:  =(u.who our)  (prod-client-at 0 (pairs:enjs:format ~[['peek' b+&]]))
+    (push-nudge u.who)
+  $
+::  +push-nudge: a nudge into a customer's inbox, through the road every
+::  install lays for any ship to poke (+lay-inbox-road). Ames delivers
+::  it, and its ack comes back to a loop that drops it.
+::
+++  push-nudge
+  |=  target=@p
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  =lane:tarball  [%& armillary-instance:arm %'inbox.sig']
+  =/  req=load:remo:nexus
+    [[/inbox-poke lane] %poke [[/ %json] (pairs:enjs:format ~[['op' s+'nudge']])]]
+  ;<  w=wire  bind:m  (nonce:io /push)
+  %-  send-dart:io
+  [%node w &+&+[/sys/gall %'main.sig'] %poke [[/ %gall-poke] [[target %grubbery] grubbery-load+req]]]
 ::  +take-inbox: one poke from a ship. Everything is refused cleanly and
 ::  noted in /tr/inbox; nothing a stranger sends reaches /tr/log.
 ::
@@ -2818,6 +2925,12 @@
   ::  nobody's op: dropped without a ring row
   ?.  =([/ %json] p.sage)  (pure:m ~)
   =/  jon=json  (fall (mole |.(!<(json q.sage))) ~)
+  ::  a nudge from our own vendor: our view there moved, so the client
+  ::  reads it now. Anyone else's nudge is nothing, and leaves no row.
+  ?:  =('nudge' (gs:arm jon 'op'))
+    ;<  vj=json  bind:m  (read-json (rf 0 / %'vendor.json'))
+    ?.  =(`src (slaw %p (gs:arm vj 'ship')))  (pure:m ~)
+    (prod-client-at 0 (pairs:enjs:format ~[['peek' b+&]]))
   =/  got  (de-inbox:arm jon)
   ?:  ?=(%| -.got)  (note-inbox 'inbox' | p.got who)
   =/  o=inbox-op:arm  p.got
@@ -3566,6 +3679,10 @@
     (tick-round |)
   ?.  =([/ %json] p.sage)  tick-wait
   =/  jon=json  (fall (mole |.(!<(json q.sage))) ~)
+  =/  one=(unit @p)  (slaw %p (gs:arm jon 'lease'))
+  ?^  one
+    ;<  ~  bind:m  (tick-one-lease u.one)
+    tick-wait
   ?:  (gb:arm jon 'views')
     ;<  all=(list [=account:arm keys=@ud])  bind:m  (all-accounts 0)
     ;<  now=@da  bind:m  get-time:io
@@ -3573,6 +3690,25 @@
     tick-wait
   ;<  ~  bind:m  (cancel-timer:io /tick)
   (tick-round &)
+::  +tick-one-lease: one account's lease once money moved: a lease read
+::  disabled, or capped at the old balance, is read again and moved, and
+::  a paying account with none is given one, rather than waiting up to
+::  ten minutes for the tick. A second first, for the credit's writer
+::  step to land.
+::
+++  tick-one-lease
+  |=  who=@p
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ~  bind:m  (nap ~s1)
+  ;<  a=(unit account:arm)  bind:m  (live-account-at 0 who)
+  ?~  a  (pure:m ~)
+  ;<  s=settings:arm  bind:m  (settings-of 0)
+  ;<  now=@da  bind:m  get-time:io
+  =/  paying=(set @p)
+    ?:  |(=('' lease-provider.s) !(syn:si balance.u.a) =(--0 balance.u.a))  ~
+    (sy who ~)
+  (tick-leases ~[who] now & paying)
 ::  +tick-pass: give every paying account a lease when this vendor
 ::  offers them, reconcile every lease that has not been read lately,
 ::  expire the checkouts whose window has run out, and fold the ledger
@@ -3975,9 +4111,13 @@
   ?:  =(vendor our)
     ;<  jon=json  bind:m  (read-json (rf 0 (acct-dir our) %'view.json'))
     (pure:m (view-doc jon))
-  =/  road=road:tarball
-    [%& %& (weld armillary-instance:arm (acct-dir our)) %'view.json']
-  ;<  vw=(unit view:nexus)  bind:m  (peek-remote-wait vendor road)
+  ::  status.json is one round trip; a vendor from before it has only the
+  ::  whole view, and refuses the read of status.json at once
+  =/  dir=path  (weld armillary-instance:arm (acct-dir our))
+  ;<  vw=(unit view:nexus)  bind:m  (peek-remote-wait vendor [%& %& dir %'status.json'])
+  ;<  vw=(unit view:nexus)  bind:m
+    ?:  ?=([~ %file *] vw)  (pure:(fiber:fiber:nexus ,(unit view:nexus)) vw)
+    (peek-remote-wait vendor [%& %& dir %'view.json'])
   ?.  ?=([~ %file *] vw)  (pure:m ~)
   =/  jon=(unit json)  (sang-json sang.u.vw)
   ?~  jon  (pure:m ~)
@@ -5096,6 +5236,7 @@
     ==
   ;<  err=(unit tang)  bind:m  (poke-soft:io (rf 1 / %'main.sig') [[/ %json] op])
   ?^  err  (send-err eyre-id 500 'the writer refused the poke')
+  ;<  ~  bind:m  (prod-tick-lease u.who)
   =/  move=@sd  ?:(=('credit' kind) (sun:si amount) (new:si | amount))
   =/  bal=@sd  (sum:si balance.u.a move)
   %^  send-json  eyre-id  200
@@ -5327,6 +5468,17 @@
   ;<  wir=wire  bind:m  (nonce:io /prod-tick)
   %:  send-dart:io  %node  wir  (rf 1 / %'tick.sig')
     %poke  [[/ %json] (pairs:enjs:format ~[['views' b+&]])]
+  ==
+::  +prod-tick-lease: ask the tick to move one account's lease after its
+::  balance moved, without waiting on it
+::
+++  prod-tick-lease
+  |=  who=@p
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  wir=wire  bind:m  (nonce:io /prod-tick)
+  %:  send-dart:io  %node  wir  (rf 1 / %'tick.sig')
+    %poke  [[/ %json] (pairs:enjs:format ~[['lease' s+(scot %p who)]])]
   ==
 ::  +serve-report: what the vendor made over a window. Every account's
 ::  ledger is walked once; the arithmetic is the lib's, so what the
@@ -5827,14 +5979,15 @@
 ::  The stamp lets the client skip a prod a later pass already
 ::  answered (+take-fresh-prod).
 ::
-++  prod-client
-  |=  jon=json
+++  prod-client  |=(jon=json (prod-client-at 1 jon))
+++  prod-client-at
+  |=  [up=@ud jon=json]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  wir=wire  bind:m  (nonce:io /prod)
   ;<  now=@da  bind:m  get-time:io
   =/  doc=json  ?.(?=([%o *] jon) jon [%o (~(put by p.jon) 'at' s+(scot %da now))])
-  (send-dart:io %node wir (rf 1 / %'client.sig') %poke [[/ %json] doc])
+  (send-dart:io %node wir (rf up / %'client.sig') %poke [[/ %json] doc])
 ::  +fresh-nonce: an op's idempotency key, from entropy
 ::
 ++  fresh-nonce
@@ -5902,6 +6055,20 @@
   =.  base  (~(put by base) 'self' s+(scot %p our))
   =.  base  (~(put by base) 'free' b+free)
   =.  base  (~(put by base) 'stale' (en-num:arm stale))
+  ::  ?history=1 is the Data view's: the whole ledger and the daily
+  ::  series, read from the vendor now, since the status a pass reads
+  ::  carries neither. A vendor from before history.json leaves the
+  ::  answer as stored, which is its whole view.
+  ?.  =('1' (fall (get-key:kv:html-utils 'history' args) ''))
+    (send-json eyre-id 200 [%o base])
+  =/  vendor=(unit @p)  (slaw %p (gs:arm vj 'ship'))
+  ?:  |(?=(~ vendor) =(u.vendor our))  (send-json eyre-id 200 [%o base])
+  =/  road=road:tarball
+    [%& %& (weld armillary-instance:arm (acct-dir our)) %'history.json']
+  ;<  vw=(unit view:nexus)  bind:m  (peek-remote-wait u.vendor road)
+  =/  hist=(unit json)  ?.(?=([~ %file *] vw) ~ (sang-json sang.u.vw))
+  =?  base  ?=([~ %o *] hist)
+    (~(gas by base) ~[['ledger' (gj:arm u.hist 'ledger')] ['daily' (gj:arm u.hist 'daily')]])
   (send-json eyre-id 200 [%o base])
 ::  +await-fetched: the view moved, or thirty seconds went by. The
 ::  answer is whatever is stored either way.
@@ -6349,7 +6516,7 @@
   ;<  n=@t  bind:m  fresh-nonce
   ;<  ~  bind:m  (queue-at n (en-inbox:arm [%lease ~]))
   ;<  ~  bind:m  (prod-client (pairs:enjs:format ~[['peek' b+&]]))
-  ;<  doc=json  bind:m  (await-lease (gn:arm before 'rev') 30)
+  ;<  doc=json  bind:m  (await-lease (gn:arm before 'rev') (gs:arm before 'lease_error') 30)
   =/  lease=json  (gj:arm doc 'lease')
   =/  why=@t  (gs:arm doc 'lease_error')
   ?:  ?=([%o *] lease)  (send-json eyre-id 200 lease)
@@ -6358,20 +6525,25 @@
     %^  send-json  eyre-id  202
     (pairs:enjs:format ~[['pending' b+&] ['nonce' s+n]])
   (send-err eyre-id 502 why)
-::  +await-lease: the view moved, or thirty seconds went by. Every
-::  answer to a lease op rewrites the view, so a rev that moved is an
-::  answer even when the answer is a refusal.
+::  +await-lease: the answer to a lease op, or thirty seconds. A view
+::  that moved is the answer only when it holds a lease or an error
+::  other than the one before: the vendor's nudges bring views written
+::  for other reasons, and one from before the op still says why the
+::  last lease went.
 ::
 ++  await-lease
-  |=  [was=@ud left=@ud]
+  |=  [was=@ud why=@t left=@ud]
   =/  m  (fiber:fiber:nexus ,json)
   ^-  form:m
   ;<  doc=json  bind:m  (read-json (rf 1 / %'view.json'))
-  ?.  =(was (gn:arm doc 'rev'))  (pure:m doc)
+  ?:  ?&  !=(was (gn:arm doc 'rev'))
+          |(?=([%o *] (gj:arm doc 'lease')) !=(why (gs:arm doc 'lease_error')))
+      ==
+    (pure:m doc)
   ?:  =(0 left)  (pure:m doc)
   ;<  ~  bind:m  (nudge left)
   ;<  ~  bind:m  (nap ~s1)
-  (await-lease was (dec left))
+  (await-lease was why (dec left))
 ::  +serve-give-lease: give the lease back. This ship forgets the key
 ::  at once, so a key that is gone here is gone here even if the vendor
 ::  is down; the vendor deletes it upstream when the op lands.
@@ -6488,6 +6660,7 @@
         ['ref' s+(rap 3 'stub-' nonce ~)]
         ['note' s+'stub checkout']
     ==
+  ;<  ~  bind:m  (prod-tick-lease u.who)
   ;<  ~  bind:m
     %+  poke-writer  1
     %-  pairs:enjs:format
@@ -6642,6 +6815,9 @@
         ['ref' s+id.u.got]
         ['note' s+'stripe checkout']
     ==
+  ;<  ~  bind:m
+    ?:  |(already subs)  (pure:(fiber:fiber:nexus ,~) ~)
+    (prod-tick-lease u.who)
   ::  a subscription session is also where the Stripe ids first arrive.
   ::  renews is unknown until the first invoice says so.
   ;<  ~  bind:m
@@ -6710,6 +6886,7 @@
         ['ref' s+id.u.got]
         ['note' s+'stripe subscription']
     ==
+  ;<  ~  bind:m  ?:(already (pure:(fiber:fiber:nexus ,~) ~) (prod-tick-lease ship.a))
   ;<  ~  bind:m
     %+  poke-writer  1
     %-  pairs:enjs:format
@@ -7065,6 +7242,7 @@
         ['ref' s+id.u.got]
         ['note' s+'btcpay invoice']
     ==
+  ;<  ~  bind:m  ?:(already (pure:(fiber:fiber:nexus ,~) ~) (prod-tick-lease u.who))
   ;<  ~  bind:m  (mark-paid u.who nonce.u.hit row.u.hit '')
   (pure:m [& ?:(already 'already recorded' '')])
 ::  +serve-btcpay-hook: the webhook, public and without a cookie. A bad

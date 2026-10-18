@@ -1480,7 +1480,8 @@
         });
       });
     } else if (r.name === 'data' && !providerMode) {
-      p = api('/account').then(function (d) { draw(myData(d)); });
+      // the daily series is in the vendor's history file, read on ask
+      p = api('/account?history=1').then(function (d) { draw(myData(d)); });
     } else if (r.name === 'data') {
       p = api('/data?days=' + encodeURIComponent(dataDays)).then(function (d) { draw(vendorData(d, dataDays)); });
     } else if (r.name === 'report') {
