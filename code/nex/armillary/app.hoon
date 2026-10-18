@@ -127,10 +127,11 @@
       =/  m  (fiber:fiber:nexus ,~)
       ^-  process:fiber:nexus
       ?+    rail  stay:m
-          ::  the writer. It reaches nothing at rise: a jailed install
-          ::  (weir not yet approved) would have every bowl poke vetoed,
-          ::  and a crashed writer waits for the next poke before it
-          ::  runs again.
+          ::  the writer. A jailed install (weir not yet approved) has
+          ::  every bowl poke vetoed, so the first read, the drop of holds
+          ::  at a clean start or a poke's own, parks it until the
+          ::  approval reload, as it parks inbox, client and tick. A
+          ::  crashed writer waits for the next poke before it runs again.
           [~ %'main.sig']
         ;<  ~  bind:m  (rise prod %'main.sig' %'main.sig' 0)
         ::  a clean start is a reload, which restarts every call in
@@ -361,6 +362,7 @@
   ?:  =('credit' op)         (do-credit jon)
   ?:  =('debit' op)          (do-debit jon)
   ?:  =('refund' op)         (do-refund jon)
+  ?:  =('take-back' op)      (do-take-back jon)
   ?:  =('add-key' op)        (do-add-key jon)
   ?:  =('drop-key' op)       (do-drop-key jon)
   ?:  =('touch-key' op)      (do-touch-key jon)
@@ -650,17 +652,18 @@
   ;<  now=@da  bind:m  get-time:io
   =/  until=@da  (add now ~s30)
   ;<  tw=wire  bind:m  (nonce:io /remote)
-  ::  the wire names the file read, so an answer to an earlier read of
-  ::  the same file that came after its thirty seconds is taken here
-  ::  rather than left in this fiber's queue forever; for a view or a
-  ::  catalog the late answer is as good as the one asked for, and a
-  ::  tombstone's name is its own nonce
+  ::  the wire names the ship and the file read. A read waits for its
+  ::  own answer. One to an earlier read of the same file from the same
+  ::  ship, come after its thirty seconds, is held meanwhile and taken
+  ::  only if the read's own does not come: a slow vendor's views keep
+  ::  coming, and no read is left one answer behind. A late answer from
+  ::  any other ship is dropped. A tombstone's name is its own nonce.
   =/  tag=@ta
     ?-  -.road
       %|  %local
       %&  ?-(-.p.road %& name.p.p.road, %| ?~(p.p.road %dir (rear `path`p.p.road)))
     ==
-  ;<  pw=wire  bind:m  (nonce:io /peek/[tag])
+  ;<  pw=wire  bind:m  (nonce:io /remote-peek/[(scot %p target)]/[tag])
   =/  rr=road:tarball
     ?-  -.road
       %|  road
@@ -673,21 +676,46 @@
     ==
   ;<  ~  bind:m  (send-dart:io %node pw rr %peek ~ ~ %.y)
   ;<  ~  bind:m  (set-timer:io tw until)
-  ;<  got=(unit view:nexus)  bind:m
+  ;<  got=(unit view:nexus)  bind:m  (take-peek pw tw ~)
+  ;<  ~  bind:m  (cancel-timer:io tw)
+  (pure:m got)
+::  +take-peek: one remote read's answer, as +peek-remote-wait says,
+::  with .late the newest late answer to the same read held so far
+::
++$  peek-in
+  $%  [%mine v=view:nexus]
+      [%late v=view:nexus]
+      [%drop ~]
+      [%none ~]
+      [%time ~]
+  ==
+++  take-peek
+  |=  [pw=wire tw=wire late=(unit view:nexus)]
+  =/  m  (fiber:fiber:nexus ,(unit view:nexus))
+  ^-  form:m
+  ;<  in=peek-in  bind:m
     |=  input:fiber:nexus
     :+  ~  q.state
     ?+  in  [%skip ~]
         ~  [%wait ~]
         [~ %veto %node * * *]
-      ?.(=(pw wire.dart.u.in) [%skip ~] [%done ~])
+      ?.(=(pw wire.dart.u.in) [%skip ~] [%done %none ~])
         [~ %peek * *]
-      ?.(=((scag 2 pw) (scag 2 wire.u.in)) [%skip ~] [%done `view.u.in])
+      ?:  =(pw wire.u.in)  [%done %mine view.u.in]
+      ?.  ?=([%remote-peek *] wire.u.in)  [%skip ~]
+      ?.  =((scag 3 pw) (scag 3 `path`wire.u.in))  [%done %drop ~]
+      [%done %late view.u.in]
         [~ %poke * *]
       ?.  =([/ %timer-wake] p.sage.u.in)  [%skip ~]
-      ?.(=(tw !<(path q.sage.u.in)) [%skip ~] [%done ~])
+      ?.(=(tw !<(path q.sage.u.in)) [%skip ~] [%done %time ~])
     ==
-  ;<  ~  bind:m  (cancel-timer:io tw)
-  (pure:m got)
+  ?-  -.in
+    %mine  (pure:m `v.in)
+    %late  (take-peek pw tw `v.in)
+    %drop  (take-peek pw tw late)
+    %none  (pure:m ~)
+    %time  (pure:m late)
+  ==
 ::  ==  the writer's ops
 ::
 ::  +do-set-settings: replace the document whole
@@ -1088,6 +1116,57 @@
   ;<  ~  bind:m  (do-write-view ship.c)
   ;<  ~  bind:m  (note 'refund' & '' who (new:si | amount.c))
   (pure:m &)
+::  +do-take-back: what a payment's refund or dispute takes back off the
+::  ledger. The credit comes back in proportion to what the rail took
+::  back of what the payment charged, so a plan whose credit is not its
+::  price, or a payment with tax, gives back what it credited. .source
+::  is the ref prefix of this refund or dispute: what it took already
+::  is not taken again, and every take-back of the payment together
+::  stops at its credit. Weighed here, one at a time, so two webhooks
+::  at once take the difference once.
+::
+++  do-take-back
+  |=  jon=json
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  who=(unit @p)  (slaw %p (gs:arm jon 'ship'))
+  =/  pay=@t  (gs:arm jon 'payment')
+  =/  source=@t  (gs:arm jon 'source')
+  =/  ref=@t  (gs:arm jon 'ref')
+  =/  legacy=@t  (gs:arm jon 'legacy')
+  ?:  |(?=(~ who) =('' pay) =('' source) =('' ref))
+    (refuse 'take-back' 'ship, payment, source and ref: required' '')
+  =/  txt=@t  (scot %p u.who)
+  ;<  rows=(list [name=@ta =row:arm])  bind:m  (ledger-of 0 u.who)
+  =/  credit=(unit @ud)  (credited-for rows pay)
+  ?~  credit  (note-then-no 'take-back' 'that payment was never credited' txt)
+  ?:  &(!=('' legacy) (has-ref rows legacy))
+    (note-then-no 'take-back' 'already taken back' txt)
+  =/  back=@ud  (gn:arm jon 'back')
+  =/  paid=@ud  (gn:arm jon 'paid')
+  =/  upto=@ud
+    ?:  =(0 paid)  (min u.credit (mul back 10.000))
+    (div (mul u.credit (min back paid)) paid)
+  =/  taken
+    |=  pre=@t
+    ^-  @ud
+    %+  roll  rows
+    |=  [[* r=row:arm] n=@ud]
+    ?.  &(?=(%refund kind.r) =(pre (end [3 (met 3 pre)] ref.r)))  n
+    (add n amount.r)
+  =/  done=@ud  (taken source)
+  =/  all=@ud  (add (taken (rap 3 'refund-' pay '-' ~)) (taken (rap 3 'dispute-' pay '-' ~)))
+  =/  owed=@ud  (min (sub-floor upto done) (sub-floor u.credit all))
+  ?:  =(0 owed)  (note-then-no 'take-back' 'nothing new to take back' txt)
+  %-  do-refund
+  %-  pairs:enjs:format
+  :~  ['ship' s+txt]
+      ['amount' (en-num:arm owed)]
+      ['rail' s+(gs:arm jon 'rail')]
+      ['ref' s+ref]
+      ['note' s+(gs:arm jon 'note')]
+  ==
+++  sub-floor  |=([a=@ud b=@ud] ^-(@ud ?:((gth a b) (sub a b) 0)))
 ::  +do-debit: what a request cost. Never deduplicated: two identical
 ::  requests are two charges.
 ::
@@ -1274,6 +1353,15 @@
   ?:  ?=(%| -.got)  (refuse 'delete-account' p.got '')
   =/  who=@p  ship.p.got
   =/  txt=@t  (scot %p who)
+  ::  a customer's delete is weighed again here: the money settled just
+  ::  before it, a lease's last spend, can leave the balance below zero,
+  ::  and a debt is not deleted with the account it is owed on
+  ;<  aj=json  bind:m  (read-json (rf 0 (acct-dir who) %'account.json'))
+  =/  a=(unit account:arm)  (de-account:arm aj)
+  ?:  &(!=('' nonce.p.got) ?=(^ a) !(syn:si balance.u.a))
+    =/  why=@t  'balance: below zero; top up to settle it, then delete'
+    ;<  ~  bind:m  (write-tombstone who nonce.p.got | why)
+    (note-then-no 'delete-account' why txt)
   ;<  ex=?  bind:m  (peek-exists:io (rv 0 (acct-dir who)))
   ;<  ~  bind:m  ?.(ex (pure:(fiber:fiber:nexus ,~) ~) (drop-account-files who))
   ;<  ~  bind:m  (scrub-ring %log txt)
@@ -1793,6 +1881,10 @@
   ;<  cur=json  bind:m  (read-json (rf 0 (acct-dir ship.c) %'lease.json'))
   =/  held=(unit lease:arm)  (de-lease:arm cur)
   ?~  held  (note-then-no 'touch-lease' 'no lease' txt)
+  ::  a reconcile of a key since dropped and replaced must not write its
+  ::  usage into the new key's row, or the new key's spend up to it goes
+  ::  uncharged
+  ?:  &(!=('' hash.c) !=(hash.c hash.u.held))  (note-then-no 'touch-lease' 'another key' txt)
   =/  row=lease:arm
     %=  u.held
       usage-seen  (max usage-seen.u.held usage-seen.c)
@@ -2481,13 +2573,14 @@
 ::  +touch-lease: the figures a reconcile learned, all four of them
 ::
 ++  touch-lease
-  |=  [up=@ud who=@p usage=@ud limit=@ud off=? now=@da]
+  |=  [up=@ud who=@p hash=@t usage=@ud limit=@ud off=? now=@da]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   %+  poke-writer  up
   %-  pairs:enjs:format
   :~  ['op' s+'touch-lease']
       ['ship' s+(scot %p who)]
+      ['hash' s+hash]
       ['usage_seen' (en-num:arm usage)]
       ['limit' (en-num:arm limit)]
       ['disabled' b+off]
@@ -2497,13 +2590,14 @@
 ::  leaves the cap as it is upstream, so the row must not move it
 ::
 ++  touch-seen
-  |=  [up=@ud who=@p usage=@ud now=@da]
+  |=  [up=@ud who=@p hash=@t usage=@ud now=@da]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   %+  poke-writer  up
   %-  pairs:enjs:format
   :~  ['op' s+'touch-lease']
       ['ship' s+(scot %p who)]
+      ['hash' s+hash]
       ['usage_seen' (en-num:arm usage)]
       ['checked' (en-time:arm now)]
   ==
@@ -2565,14 +2659,14 @@
   =/  spent=?  ?|(!(syn:si bal) =(--0 bal))
   =/  cap=@ud  (limit-for:aopen usage bal markup.s)
   ?.  |(!=(cap limit.l) !=(spent disabled.l))
-    ;<  ~  bind:m  (touch-lease up who usage cap spent now)
+    ;<  ~  bind:m  (touch-lease up who hash.l usage cap spent now)
     (pure:m [& ''])
   ;<  pres=[status=@ud body=@t]  bind:m
     (fetch (patch-request:aopen base pkey hash.l `cap `spent))
   ?.  (two-xx status.pres)
-    ;<  ~  bind:m  (touch-seen up who usage now)
+    ;<  ~  bind:m  (touch-seen up who hash.l usage now)
     (pure:m [| (answered status.pres)])
-  ;<  ~  bind:m  (touch-lease up who usage cap spent now)
+  ;<  ~  bind:m  (touch-lease up who hash.l usage cap spent now)
   (pure:m [& ''])
 ::  +kill-upstream: the provider forgets the key. A 404 counts as gone:
 ::  a key nobody can find is a key nobody can spend.
@@ -2644,6 +2738,13 @@
   ?~  made
     ;<  ~  bind:m  (lease-error 0 src 'openrouter answered no key')
     (note-inbox 'lease' | 'openrouter answered no key' who)
+  ::  an answer is matched to its request by order alone: a create that
+  ::  came after its deadline is taken by the next one asked for, and
+  ::  names the ship it was made for. That key is deleted, not kept.
+  ?.  =(name name.u.made)
+    ;<  *  bind:m  (kill-upstream road hash.u.made)
+    ;<  ~  bind:m  (lease-error 0 src 'openrouter answered for another key; ask again')
+    (note-inbox 'lease' | 'openrouter answered for another key' who)
   ;<  now=@da  bind:m  get-time:io
   =/  l=lease:arm
     :*  lease-provider.s
@@ -3930,6 +4031,11 @@
   ::  was lost, so it goes again, or the secret stays in the view
   ?:  (~(has in have) id.r)
     ;<  *  bind:m  (send-op vendor (en-inbox:arm [%got-key id.r]))
+    ::  and its mint is done: an op left queued goes again two minutes
+    ::  on, and mints a second key once the vendor has let this one go
+    ;<  ~  bind:m
+      ?.  (~(has by om) nonce.r)  (pure:(fiber:fiber:nexus ,~) ~)
+      (poke-writer 0 (pairs:enjs:format ~[['op' s+'drop-op'] ['nonce' s+nonce.r]]))
     (take-pending vendor t.rows om have)
   ?.  (~(has by om) nonce.r)  (take-pending vendor t.rows om have)
   ;<  now=@da  bind:m  get-time:io
@@ -5340,11 +5446,9 @@
   |=  [row=model-row:arm jon=json size=@ud]
   ^-  @ud
   =/  cap=@ud
-    =/  a=@ud  (gn:arm jon 'max_tokens')
-    =/  b=@ud  (gn:arm jon 'max_completion_tokens')
-    ?.  =(0 a)  a
-    ?.  =(0 b)  b
-    8.192
+    ::  the larger of the two: a server may honour either
+    =/  c=@ud  (max (gn:arm jon 'max_tokens') (gn:arm jon 'max_completion_tokens'))
+    ?:(=(0 c) 8.192 c)
   (add (charge:arm (div (add size 3) 4) in.row) (charge:arm cap out.row))
 ::  +worst-audio: what a transcription is held at: a cent a megabyte of
 ::  body, at least a cent. ponytail: speech models price by the second,
@@ -5827,6 +5931,19 @@
   ::  the hello below opens again
   ;<  cj=json  bind:m  (read-json (rf 1 / %'client.json'))
   =/  om=(map @t json)  =/(o=json (gj:arm cj 'ops') ?:(?=([%o *] o) p.o ~))
+  ::  but not one already sent and unanswered: the client sent it once a
+  ::  minute, and ames delivers every copy once the vendor is back, so
+  ::  the vendor is named again once it answers, or the client gives up
+  ::  on it after a day
+  =/  waiting=?
+    %+  lien  ~(tap by om)
+    |=  [n=@t j=json]
+    ?&  =(txt (gs:arm j 'vendor'))
+        =('delete-account' (gs:arm (gj:arm j 'payload') 'op'))
+        !(gb:arm j 'done')
+    ==
+  ?:  waiting
+    (send-err eyre-id 409 'vendor: your account delete there is not answered yet; it is given up after a day')
   =/  undo=(list @t)
     %+  murn  ~(tap by om)
     |=  [n=@t j=json]
@@ -6649,6 +6766,7 @@
   |=  sid=@t
   =/  m  (fiber:fiber:nexus ,[ok=? why=@t])
   ^-  form:m
+  ?.  (id-ok:arm sid)  (pure:m [| 'sid: not a Stripe id'])
   ;<  s=settings:arm  bind:m  (settings-of 1)
   ?:  =('' stripe-key.s)  (pure:m [| 'stripe_key: not set'])
   ;<  res=[status=@ud body=@t]  bind:m
@@ -6702,6 +6820,7 @@
   |=  id=@t
   =/  m  (fiber:fiber:nexus ,[ok=? why=@t])
   ^-  form:m
+  ?.  (id-ok:arm id)  (pure:m [| 'dispute: not a Stripe id'])
   ;<  s=settings:arm  bind:m  (settings-of 1)
   ?:  =('' stripe-key.s)  (pure:m [| 'stripe_key: not set'])
   ;<  res=[status=@ud body=@t]  bind:m
@@ -6709,34 +6828,51 @@
   ?.  (two-xx status.res)  (pure:m [| (stripe-why status.res body.res)])
   =/  got  (read-dispute:astripe body.res)
   ?~  got  (pure:m [| 'stripe answered no dispute'])
+  ?.  =(id id.u.got)  (pure:m [| 'stripe answered for another dispute'])
   ;<  hit=(unit [who=@p nonce=@t row=json])  bind:m
     (checkout-by-intent 1 intent.u.got)
   ?~  hit  (pure:m [| 'unknown payment'])
-  ::  the dispute's amount carries the tax, which was never credited, so
-  ::  what comes back is at most what that payment credited
-  ;<  rows=(list [name=@ta =row:arm])  bind:m  (ledger-of 1 who.u.hit)
-  =/  got-in=(unit @ud)  (credited-for rows (gs:arm row.u.hit 'sid'))
-  =/  micro=@ud
-    =/  asked=@ud  (mul amount.u.got 10.000)
-    ?~(got-in asked (min asked u.got-in))
+  ::  what the payment charged, so the credit comes back in proportion
+  ::  to what the dispute takes: its amount carries the tax, which was
+  ::  never credited. Unread, the dispute's own amount is taken, never
+  ::  past the credit.
+  ;<  paid=@ud  bind:m  (charge-amount s charge.u.got)
+  =/  sid=@t  (gs:arm row.u.hit 'sid')
   =/  txt=@t  (scot %p who.u.hit)
-  ::  the refund op dedupes on its ref, so a second delivery of the
-  ::  same dispute writes nothing
+  =/  ref=@t  (rap 3 'dispute-' sid '-' id.u.got ~)
   ;<  ~  bind:m
     %+  poke-writer  1
     %-  pairs:enjs:format
-    :~  ['op' s+'refund']
+    :~  ['op' s+'take-back']
         ['ship' s+txt]
-        ['amount' (en-num:arm micro)]
+        ['payment' s+sid]
+        ['source' s+ref]
+        ['ref' s+ref]
+        ['legacy' s+(rap 3 'dispute-' id.u.got ~)]
+        ['back' (en-num:arm amount.u.got)]
+        ['paid' (en-num:arm paid)]
         ['rail' s+'stripe']
-        ['ref' s+(rap 3 'dispute-' id.u.got ~)]
         ['note' s+(rap 3 'dispute ' status.u.got ~)]
     ==
   ;<  *  bind:m  (reconcile 1 who.u.hit)
   ;<  ~  bind:m
     %^  poke-note-money  1  'stripe.dispute'
-    [& (rap 3 id.u.got ' ' status.u.got ~) txt (new:si | micro)]
+    [& (rap 3 id.u.got ' ' status.u.got ~) txt --0]
   (pure:m [& (rap 3 id.u.got ' ' status.u.got ~)])
+::  +charge-amount: what a charge took, in cents, or 0 unread
+::
+++  charge-amount
+  |=  [s=settings:arm id=@t]
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ?.  (id-ok:arm id)  (pure:m 0)
+  ;<  res=[status=@ud body=@t]  bind:m
+    (fetch (charge-request:astripe stripe-url.s stripe-key.s id))
+  ?.  (two-xx status.res)  (pure:m 0)
+  =/  got  (read-charge:astripe body.res)
+  ?~  got  (pure:m 0)
+  ?.  =(id id.u.got)  (pure:m 0)
+  (pure:m amount.u.got)
 ::  +credited-for: what a credit with this ref put on the ledger
 ::
 ++  credited-for
@@ -6766,28 +6902,23 @@
   ;<  hit=(unit [who=@p nonce=@t row=json])  bind:m
     (checkout-by-intent 1 intent.u.got)
   ?~  hit  (pure:m [| 'unknown payment'])
-  ;<  rows=(list [name=@ta =row:arm])  bind:m  (ledger-of 1 who.u.hit)
-  =/  got-in=(unit @ud)  (credited-for rows (gs:arm row.u.hit 'sid'))
-  ?~  got-in  (pure:m [| 'that payment was never credited'])
-  =/  pre=tape  (trip (rap 3 'refund-' id '-' ~))
-  =/  done=@ud
-    %+  roll  rows
-    |=  [[* r=row:arm] n=@ud]
-    ?.  &(?=(%refund kind.r) =(pre (scag (lent pre) (trip ref.r))))  n
-    (add n amount.r)
-  =/  owed=@ud  (min (mul refunded.u.got 10.000) u.got-in)
-  ?:  (lte owed done)  (pure:m [& 'nothing new refunded'])
+  =/  sid=@t  (gs:arm row.u.hit 'sid')
   =/  txt=@t  (scot %p who.u.hit)
   ;<  ~  bind:m
     %+  poke-writer  1
     %-  pairs:enjs:format
-    :~  ['op' s+'refund']
+    :~  ['op' s+'take-back']
         ['ship' s+txt]
-        ['amount' (en-num:arm (sub owed done))]
+        ['payment' s+sid]
+        ['source' s+(rap 3 'refund-' sid '-' ~)]
+        ['ref' s+(rap 3 'refund-' sid '-' (crip (a-co:co refunded.u.got)) ~)]
+        ['back' (en-num:arm refunded.u.got)]
+        ['paid' (en-num:arm amount.u.got)]
         ['rail' s+'stripe']
-        ['ref' s+(rap 3 'refund-' id '-' (crip (a-co:co refunded.u.got)) ~)]
         ['note' s+'refunded on stripe']
     ==
+  ::  the lease is recapped to what is left, as after a dispute
+  ;<  *  bind:m  (reconcile 1 who.u.hit)
   (pure:m [& ''])
 ::  +read-dispute-status: where a dispute ended up. Nothing moves on a
 ::  close: a dispute we won is credited back by the owner, by hand,
@@ -6797,6 +6928,7 @@
   |=  id=@t
   =/  m  (fiber:fiber:nexus ,[ok=? why=@t])
   ^-  form:m
+  ?.  (id-ok:arm id)  (pure:m [| 'dispute: not a Stripe id'])
   ;<  s=settings:arm  bind:m  (settings-of 1)
   ?:  =('' stripe-key.s)  (pure:m [| 'stripe_key: not set'])
   ;<  res=[status=@ud body=@t]  bind:m

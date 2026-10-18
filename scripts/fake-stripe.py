@@ -238,6 +238,7 @@ def dispute(key):
         found = STORE['disputes'][did] = {
             'id': did,
             'payment_intent': intent,
+            'charge': (charge_of(intent) or {}).get('id', ''),
             'amount': amount,
             'currency': 'usd',
             'status': 'needs_response',

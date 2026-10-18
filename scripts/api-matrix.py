@@ -470,8 +470,10 @@ bal = dictish(dictish(acct).get('account')).get('balance', 0)
 cap = (bal * 6 // 10) // 19 + 1          # out at 19.5 a token: about 60 percent each
 burst = []
 def burst_call():
+    # max_tokens 1 beside the real cap: the hold takes the larger
     burst.append(curl('POST', V1 + '/chat/completions',
-                      {'model': 'stub/slow5', 'messages': message('hi'), 'max_tokens': cap},
+                      {'model': 'stub/slow5', 'messages': message('hi'), 'max_tokens': 1,
+                       'max_completion_tokens': cap},
                       jar=None, bearer=SEC1)[0])
 threads = [threading.Thread(target=burst_call) for _ in range(6)]
 for t in threads:
