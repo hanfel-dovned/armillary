@@ -724,9 +724,16 @@
       ?.(=(pw wire.dart.u.in) [%skip ~] [%done %none ~])
         [~ %peek * *]
       ?:  =(pw wire.u.in)  [%done %mine view.u.in]
-      ?.  ?=([%remote-peek *] wire.u.in)  [%skip ~]
-      ?.  =((scag 3 pw) (scag 3 `path`wire.u.in))  [%done %drop ~]
+      ::  a late answer to this same read is held; any other read's is
+      ::  dropped, since reads here run one at a time and nobody else
+      ::  waits for it
+      ?.  ?&  ?=([%remote-peek *] wire.u.in)
+              =((scag 3 pw) (scag 3 `path`wire.u.in))
+          ==
+        [%done %drop ~]
       [%done %late view.u.in]
+        ::  the answer to a poke sent without waiting: nobody takes it
+        [~ %pack *]  [%done %drop ~]
         [~ %poke * *]
       ?.  =([/ %timer-wake] p.sage.u.in)  [%skip ~]
       ?.(=(tw !<(path q.sage.u.in)) [%skip ~] [%done %time ~])
@@ -2860,8 +2867,12 @@
   %+  lien  ~(tap by pm)
   |=([id=@t j=json] =(nonce (gs:arm j 'nonce')))
 ::  +take-poke-quiet: the next poke, as +take-poke-from:io takes it,
-::  dropping the answer to a poke this fiber sent without waiting: a
-::  long-lived fiber that left those queued would carry them forever
+::  dropping what no wait will ever take: the answer to a poke this
+::  fiber sent without waiting, and a read's answer that came after the
+::  read gave up. A skipped input is offered again at every step the
+::  fiber takes, for as long as it lives and across reloads, so a
+::  long-lived fiber that left those queued grew slower with age:
+::  ricsul's client took 22 s over a read a request fiber made in 3 s.
 ::
 ++  take-poke-quiet
   =/  m  (fiber:fiber:nexus ,[from:fiber:nexus sage:tarball])
@@ -2871,6 +2882,7 @@
   ?+  in  [%skip ~]
       ~  [%wait ~]
       [~ %pack *]  [%wait ~]
+      [~ %peek *]  [%wait ~]
       [~ %veto *]  [%fail (veto-error:io dart.u.in)]
       [~ %poke * *]  [%done [from sage]:u.in]
   ==
@@ -3672,7 +3684,7 @@
 ++  tick-wait
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-from:io
+  ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-quiet
   ?:  =([/ %timer-wake] p.sage)
     =/  wir=path  (fall (mole |.(!<(path q.sage))) /)
     ?.  =(/tick wir)  tick-wait
@@ -3836,7 +3848,7 @@
     ::  is looked after every minute.
     ;<  now=@da  bind:m  get-time:io
     ;<  ~  bind:m  (set-timer:io /idle (add now ?:(queued ~m1 ~m5)))
-    ;<  *  bind:m  take-poke-from:io
+    ;<  *  bind:m  take-poke-quiet
     ;<  ~  bind:m  (cancel-timer:io /idle)
     $
   ;<  ~  bind:m  (client-pass u.vendor)
@@ -3857,7 +3869,9 @@
   |=  began=@da
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  [* =sage:tarball]  bind:m  take-poke-from:io
+  ::  the client waits here between passes, so this is where what no
+  ::  wait will take is dropped (+take-poke-quiet)
+  ;<  [* =sage:tarball]  bind:m  take-poke-quiet
   =/  at=(unit @da)
     ?.  =([/ %json] p.sage)  ~
     =/  jon=(unit json)  (mole |.(!<(json q.sage)))
