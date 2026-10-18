@@ -50,9 +50,9 @@ Eight event types do anything:
 | `checkout.session.async_payment_failed` | mark the checkout row `failed`. Nothing was credited, so nothing comes off |
 | `invoice.paid` | read the invoice with `expand[]=payments`, find the account by its Stripe customer id, credit the plan's `credit`, set `renews` from the invoice's period end, and keep the invoice's payment as a paid checkout row keyed by the invoice, with its PaymentIntent, so a dispute or a refund on that period finds its credit. An API older than 2025-03 refuses the expand, and the invoice is read again plain, with the PaymentIntent on it |
 | `customer.subscription.deleted` | find the account holding that subscription id and clear its subscription |
-| `charge.dispute.created` | read the dispute, find the ship by its PaymentIntent, and take the money back off the ledger |
+| `charge.dispute.created` | read the dispute and its charge, find the ship by its PaymentIntent, and take the payment's credit back off the ledger in proportion to what the dispute takes of what the charge took |
 | `charge.dispute.closed` | note the dispute's final status in the ring and change nothing |
-| `charge.refunded` | read the charge back, find the ship by its PaymentIntent, and take off what was refunded since the last time, at most what the payment credited |
+| `charge.refunded` | read the charge back, find the ship by its PaymentIntent, and take the payment's credit back in proportion to what has been refunded of what the charge took, less what earlier refunds took |
 
 The credit follows `amount_subtotal`, not `amount_total`. Tax collected on a sale is the state's money, not the customer's balance, so a session that one day carries tax credits the goods and nothing else.
 
@@ -123,7 +123,7 @@ There is one product: Talon inference credit, bought in dollars and spent on any
 
 Brave searches through the vendor are charged the same way (version 32): each answered search at the vendor's cost for it, Brave's list price unless the vendor sets its own, times the markup.
 
-Since version 36 a payment is credited once however old it is: a credit or refund row is never folded by compaction, and a checkout already marked paid is never credited again. A dispute takes back at most what its payment credited, which leaves the tax out, and a refund made on Stripe (`charge.refunded`) takes back the credit it undoes, partial refunds included. A subscription's every period, the first too, is credited by its invoice at the plan's credit, and each invoice's payment is a checkout row of its own, so a dispute or a refund on any period finds its credit. A paid checkout row is kept for good for the same reason; any other finished row goes a month after its window, and an account's view carries the last thirty days. Every price, plan amount, markup, minimum and search cost an owner sends must be a whole number.
+Since version 36 a payment is credited once however old it is: a credit or refund row is never folded by compaction, and a checkout already marked paid is never credited again. A refund made on Stripe (`charge.refunded`) or a dispute takes the payment's credit back in proportion to what it took of what the charge took, so a plan whose credit is not its price, or a payment with tax, gives back exactly what it credited. Every take-back of one payment together stops at its credit, and the writer weighs them one at a time, so two webhooks at once take the difference once. A refund recaps the lease at once, as a dispute does. A subscription's every period, the first too, is credited by its invoice at the plan's credit, and each invoice's payment is a checkout row of its own, so a dispute or a refund on any period finds its credit. A paid checkout row is kept for good for the same reason; any other finished row goes a month after its window, and an account's view carries the last thirty days. Every price, plan amount, markup, minimum and search cost an owner sends must be a whole number.
 
 ## Plans
 
