@@ -158,6 +158,7 @@
     (expect-eq !>(`@ud`0) !>(usage.u.got))
     (expect-eq !>(`@ud`1.500.000) !>(limit.u.got))
     (expect !>(!disabled.u.got))
+    (expect-eq !>('armillary/~feb') !>(name.u.got))
   ==
 ++  test-read-key
   =/  got  (read-key:ao read-body)

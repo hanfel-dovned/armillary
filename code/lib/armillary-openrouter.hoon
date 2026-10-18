@@ -201,9 +201,12 @@
 ::  +read-created: what a create answered. The plaintext key is at the
 ::  top level and the figures are under data.
 ::
+::    name is the one the create asked for: an answer is matched to
+::    its request by order alone, so a late one names another ship
+::
 ++  read-created
   |=  body=@t
-  ^-  (unit [key=@t hash=@t usage=@ud limit=@ud disabled=?])
+  ^-  (unit [key=@t hash=@t usage=@ud limit=@ud disabled=? name=@t])
   =/  jon=json  (de-body body)
   ?.  ?=([%o *] jon)  ~
   =/  key=@t  (gs jon 'key')
@@ -217,6 +220,7 @@
       (fall (micro-of (gj d 'usage')) 0)
       (fall (micro-of (gj d 'limit')) 0)
       (gb d 'disabled')
+      (gs d 'name')
   ==
 ::  +read-key: the same figures on a read. usage is credits spent in
 ::  USD, which is what the reconcile turns into a debit.

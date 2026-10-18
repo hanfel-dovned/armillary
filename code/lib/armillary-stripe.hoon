@@ -347,6 +347,9 @@
   ::  invoice before the 2025-03 API, on its first payment since
   =/  intent=@t
     =/  pays=(list json)  (ga (gj jon 'payments') 'data')
+    ::  the payment that paid it: a failed attempt can be listed first
+    =/  paid=(list json)  (skim pays |=(j=json =('paid' (gs j 'status'))))
+    =?  pays  ?=(^ paid)  paid
     =/  new=@t  ?~(pays '' (gs (gj i.pays 'payment') 'payment_intent'))
     ?:(=('' new) (gs jon 'payment_intent') new)
   :-  ~
@@ -375,12 +378,12 @@
 ::
 ++  read-dispute
   |=  body=@t
-  ^-  (unit [id=@t intent=@t amount=@ud status=@t])
+  ^-  (unit [id=@t intent=@t amount=@ud status=@t charge=@t])
   =/  jon=json  (de-body body)
   ?.  ?=([%o *] jon)  ~
   =/  id=@t  (gs jon 'id')
   ?:  =('' id)  ~
-  `[id (gs jon 'payment_intent') (gn jon 'amount') (gs jon 'status')]
+  `[id (gs jon 'payment_intent') (gn jon 'amount') (gs jon 'status') (gs jon 'charge')]
 ::  +charge-request: read a charge back, for a refund made on Stripe
 ::
 ++  charge-request
@@ -393,12 +396,12 @@
 ::
 ++  read-charge
   |=  body=@t
-  ^-  (unit [id=@t intent=@t refunded=@ud])
+  ^-  (unit [id=@t intent=@t refunded=@ud amount=@ud])
   =/  jon=json  (de-body body)
   ?.  ?=([%o *] jon)  ~
   =/  id=@t  (gs jon 'id')
   ?:  =('' id)  ~
-  `[id (gs jon 'payment_intent') (gn jon 'amount_refunded')]
+  `[id (gs jon 'payment_intent') (gn jon 'amount_refunded') (gn jon 'amount')]
 ::  ==  events
 ::
 ::  +event-of: the only two things a webhook body is trusted for. The

@@ -284,7 +284,9 @@
     %+  rap  3
     :~  '{"id":"in_2","object":"invoice","status":"paid","customer":"cus_9",'
         '"parent":{"type":"subscription_details","subscription_details":{"subscription":"sub_new"}},'
-        '"payments":{"object":"list","data":[{"id":"inpay_1","object":"invoice_payment",'
+        '"payments":{"object":"list","data":[{"id":"inpay_0","object":"invoice_payment",'
+        '"payment":{"type":"payment_intent","payment_intent":"pi_failed"},"status":"canceled"},'
+        '{"id":"inpay_1","object":"invoice_payment",'
         '"payment":{"type":"payment_intent","payment_intent":"pi_new"},"status":"paid"}]},'
         '"lines":{"data":[{"id":"il_1","period":{"end":1792525000,"start":1789933000},'
         '"pricing":{"type":"price_details","price_details":{"price":"price_new","product":"prod_1"}}}]}}'
@@ -307,8 +309,9 @@
     (expect-eq !>('ch_1') !>(id.u.got))
     (expect-eq !>('pi_7') !>(intent.u.got))
     (expect-eq !>(`@ud`250) !>(refunded.u.got))
-    (expect-eq !>(`(unit [id=@t intent=@t refunded=@ud])`~) !>((read-charge:ast '{"object":"charge"}')))
-    (expect-eq !>(`(unit [id=@t intent=@t refunded=@ud])`~) !>((read-charge:ast 'junk')))
+    (expect-eq !>(`@ud`1.000) !>(amount.u.got))
+    (expect-eq !>(`(unit [id=@t intent=@t refunded=@ud amount=@ud])`~) !>((read-charge:ast '{"object":"charge"}')))
+    (expect-eq !>(`(unit [id=@t intent=@t refunded=@ud amount=@ud])`~) !>((read-charge:ast 'junk')))
   ==
 ++  test-charge-request
   =/  req=request:http  (charge-request:ast base key 'ch_1')
@@ -318,7 +321,7 @@
   ==
 ++  a-dispute
   '''
-  {"id":"dp_1","payment_intent":"pi_7","amount":1000,"currency":"usd",
+  {"id":"dp_1","payment_intent":"pi_7","charge":"ch_7","amount":1000,"currency":"usd",
    "status":"needs_response"}
   '''
 ++  test-read-dispute
@@ -329,7 +332,8 @@
     (expect-eq !>('pi_7') !>(intent.u.got))
     (expect-eq !>(`@ud`1.000) !>(amount.u.got))
     (expect-eq !>('needs_response') !>(status.u.got))
-    (expect-eq !>(`(unit [id=@t intent=@t amount=@ud status=@t])`~) !>((read-dispute:ast 'junk')))
+    (expect-eq !>('ch_7') !>(charge.u.got))
+    (expect-eq !>(`(unit [id=@t intent=@t amount=@ud status=@t charge=@t])`~) !>((read-dispute:ast 'junk')))
   ==
 ++  test-dispute-request
   =/  req=request:http  (dispute-request:ast base key 'dp_1')

@@ -2405,14 +2405,14 @@
 ::
 ++  de-op-touch-lease
   |=  jon=json
-  ^-  (each [ship=@p usage-seen=@ud limit=(unit @ud) disabled=(unit ?) checked=@da] @t)
+  ^-  (each [ship=@p usage-seen=@ud limit=(unit @ud) disabled=(unit ?) checked=@da hash=@t] @t)
   =/  who  (ship-field jon)
   ?:  ?=(%| -.who)  [%| p.who]
   =/  when=(unit @da)  (gt jon 'checked')
   ?~  when  [%| 'checked: an ISO 8601 UTC time is required']
   =/  lim=(unit @ud)  ?.((has-key jon 'limit') ~ `(gn jon 'limit'))
   =/  dis=(unit ?)  ?.((has-key jon 'disabled') ~ `(gb jon 'disabled'))
-  [%& [p.who (gn jon 'usage_seen') lim dis u.when]]
+  [%& [p.who (gn jon 'usage_seen') lim dis u.when (gs jon 'hash')]]
 ::  +de-op-lease-error: why the last lease op did not work. The
 ::  customer reads it in its own view and nowhere else; a blank why
 ::  clears it.

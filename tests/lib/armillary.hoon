@@ -958,7 +958,7 @@
   ==
 ++  test-de-op-touch-lease
   =/  both=@t
-    '{"ship":"~wex","usage_seen":10,"limit":20,"disabled":true,"checked":"2026-09-19T22:05:00Z"}'
+    '{"ship":"~wex","usage_seen":10,"limit":20,"disabled":true,"checked":"2026-09-19T22:05:00Z","hash":"h9"}'
   =/  bare=@t  '{"ship":"~wex","usage_seen":10,"checked":"2026-09-19T22:05:00Z"}'
   =/  got  (de-op-touch-lease:arm (jo both))
   =/  thin  (de-op-touch-lease:arm (jo bare))
@@ -967,6 +967,8 @@
     (expect-eq !>(`(unit ?)`[~ &]) !>(?:(?=(%& -.got) disabled.p.got ~)))
     (expect-eq !>(`(unit @ud)`~) !>(?:(?=(%& -.thin) limit.p.thin `99)))
     (expect-eq !>(`(unit ?)`~) !>(?:(?=(%& -.thin) disabled.p.thin `&)))
+    (expect-eq !>('h9') !>(?:(?=(%& -.got) hash.p.got '')))
+    (expect-eq !>('') !>(?:(?=(%& -.thin) hash.p.thin 'x')))
     (expect !>((refused (de-op-touch-lease:arm (jo '{"ship":"~wex"}')))))
   ==
 ++  test-de-op-lease-error
