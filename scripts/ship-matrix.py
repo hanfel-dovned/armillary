@@ -41,7 +41,6 @@ BTC_STORE = 'gatestore'
 PLAN = {'id': 'gate-pro', 'name': 'Gate Pro', 'kind': 'subscription',
         'price': 2500000, 'credit': 3000000, 'interval': 'month'}
 PLAN_CREDIT = PLAN['credit']
-SESSION_CREDIT = 2500000                       # the plan's price, paid once
 MARKUP = 130
 COST_IN, COST_OUT = 3000000, 15000000
 IN, OUT = 3900000, 19500000
@@ -574,7 +573,7 @@ check('a subscription checkout answers a session url',
       code == 200 and suburl.startswith(SSTUB + '/stub/pay/'), (code, co))
 code, d = stub_post(suburl)
 check('paying the subscription answers the record', code == 200, (code, str(d)[:120]))
-want = BASE + CARD + SESSION_CREDIT + PLAN_CREDIT
+want = BASE + CARD + PLAN_CREDIT
 view = wait_view(PEER, PJAR, lambda v: dictish(v.get('subscription')).get('active'), tries=15)
 check('the view shows the subscription active',
       dictish(view.get('subscription')).get('active') is True, view.get('subscription'))
@@ -582,7 +581,7 @@ check('the view never carries the Stripe ids',
       'id' not in dictish(view.get('subscription')), view.get('subscription'))
 check('the view names the plan', view.get('plan') == PLAN['id'], view.get('plan'))
 view = wait_view(PEER, PJAR, lambda v: v.get('balance') == want, tries=15)
-check('the session and the first invoice both credited',
+check('the first period is credited once, by its invoice',
       view.get('balance') == want, (want, view.get('balance')))
 code, acct = curl('GET', api(HOST) + '/accounts/' + CUST, jar=JAR)
 SUB = dictish(dictish(acct).get('subscription')).get('id', '')
@@ -603,6 +602,64 @@ check('a renewal credits the plan again', view.get('balance') == want + PLAN_CRE
       (want + PLAN_CREDIT, view.get('balance')))
 fresh_refs = set(refs_of(HOST, JAR, CUST)) - before
 check('the renewal carries a new ref', len(fresh_refs) == 1, sorted(fresh_refs))
+
+# every subscription payment is a checkout row naming its PaymentIntent,
+# so a refund or a dispute on any period finds the credit it undoes
+def checkouts_of():
+    code, acct = curl('GET', api(HOST) + '/accounts/' + CUST, jar=JAR)
+    return dictish(dictish(acct).get('checkouts'))
+RENEW = sorted(fresh_refs)[0] if fresh_refs else ''
+rows = checkouts_of()
+RPI = dictish(rows.get(RENEW)).get('intent', '')
+check('the renewal is a paid checkout row with its PaymentIntent',
+      dictish(rows.get(RENEW)).get('status') == 'paid' and RPI.startswith('pi_'), rows.get(RENEW))
+srow = [r for r in rows.values() if dictish(r).get('sid') == suburl.rsplit('/', 1)[-1]]
+check('the subscription session names no PaymentIntent, its invoice does',
+      len(srow) == 1 and srow[0].get('intent') == '', srow)
+# the renewal charged 250 cents for PLAN_CREDIT, so a refund takes the
+# credit back in proportion: 100 cents of 250 is 1,200,000 of 3,000,000
+BAL_R = dictish(fresh(PEER, PJAR)).get('balance', 0)
+code, ch = stub_post(SSTUB + '/stub/refund-charge/' + RPI + '/100')
+check('the stub refunds a dollar of the renewal on Stripe',
+      code == 200 and dictish(ch).get('amount_refunded') == 100, (code, ch))
+view = wait_view(PEER, PJAR, lambda v: v.get('balance') == BAL_R - 1200000, tries=15)
+check('charge.refunded takes back the credit in proportion',
+      view.get('balance') == BAL_R - 1200000, (BAL_R - 1200000, view.get('balance')))
+# two more partial refunds at once: the writer weighs each, so the two
+# webhooks together take back exactly the rest of the credit
+stub_post(SSTUB + '/stub/refund-charge/' + RPI + '/50')
+stub_post(SSTUB + '/stub/refund-charge/' + RPI + '/100')
+view = wait_view(PEER, PJAR, lambda v: v.get('balance') == BAL_R - PLAN_CREDIT, tries=15)
+settle(6)
+check('two partial refunds at once take back the rest of the credit once',
+      dictish(fresh(PEER, PJAR)).get('balance') == BAL_R - PLAN_CREDIT,
+      (BAL_R - PLAN_CREDIT, dictish(fresh(PEER, PJAR)).get('balance')))
+stub_post(SSTUB + '/stub/refund-charge/' + RPI + '/0')
+code, dp = stub_post(SSTUB + '/stub/dispute/' + RENEW)
+settle(8)
+taken = [r for r in ledger_of(HOST, JAR, CUST)
+         if str(r.get('ref', '')).startswith(('refund-' + RENEW + '-', 'dispute-' + RENEW + '-'))]
+check('a redelivery and a dispute after a full refund take nothing more',
+      sum(r.get('amount', 0) for r in taken) == PLAN_CREDIT
+      and dictish(fresh(PEER, PJAR)).get('balance') == BAL_R - PLAN_CREDIT,
+      (sum(r.get('amount', 0) for r in taken), dictish(fresh(PEER, PJAR)).get('balance')))
+# an account on an API older than 2025-03 refuses the payments expand and
+# names the PaymentIntent on the invoice
+stub_post(SSTUB + '/stub/api/old')
+before = set(refs_of(HOST, JAR, CUST))
+BAL_O = dictish(fresh(PEER, PJAR)).get('balance', 0)
+code, d = stub_post(SSTUB + '/stub/renew/' + SUB)
+view = wait_view(PEER, PJAR, lambda v: v.get('balance') == BAL_O + PLAN_CREDIT, tries=15)
+check('on the old API a renewal still credits',
+      view.get('balance') == BAL_O + PLAN_CREDIT, (BAL_O + PLAN_CREDIT, view.get('balance')))
+OLD = dictish(d).get('invoice', '')
+check('and its row names the invoice\'s own PaymentIntent',
+      str(dictish(checkouts_of().get(OLD)).get('intent', '')).startswith('pi_'), checkouts_of().get(OLD))
+stub_post(SSTUB + '/stub/api/new')
+code, dp = stub_post(SSTUB + '/stub/dispute/' + OLD)
+view = wait_view(PEER, PJAR, lambda v: v.get('balance') == BAL_O, tries=15)
+check('a dispute on the whole of a renewal takes back the whole credit',
+      code == 200 and view.get('balance') == BAL_O, (code, BAL_O, view.get('balance')))
 
 code, d = curl('POST', api(PEER) + '/cancel-subscription', {}, jar=PJAR, timeout=120)
 check('the customer asks to cancel', code == 202, (code, d))
@@ -903,14 +960,16 @@ check('the disputed credit comes back off the balance',
       view.get('balance') == BEFORE_D - CARD, (BEFORE_D - CARD, view.get('balance')))
 check('and the balance is below zero, which is the point',
       view.get('balance', 0) < 0, view.get('balance'))
-refunds = [r for r in ledger_of(HOST, JAR, CUST) if r.get('ref') == 'dispute-' + DP]
+refunds = [r for r in ledger_of(HOST, JAR, CUST)
+           if str(r.get('ref', '')).startswith('dispute-') and str(r.get('ref', '')).endswith('-' + DP)]
 check('a refund row names the dispute and the rail',
       len(refunds) == 1 and refunds[0].get('rail') == 'stripe'
       and refunds[0].get('amount') == CARD, refunds)
 code, d = stub_post(SSTUB + '/stub/dispute/' + SID)
 check('a second delivery is the same dispute', dictish(d).get('id') == DP, d)
 settle(8)
-again = [r for r in ledger_of(HOST, JAR, CUST) if r.get('ref') == 'dispute-' + DP]
+again = [r for r in ledger_of(HOST, JAR, CUST)
+         if str(r.get('ref', '')).startswith('dispute-') and str(r.get('ref', '')).endswith('-' + DP)]
 check('and it changes nothing',
       len(again) == 1 and dictish(fresh(PEER, PJAR)).get('balance') == BEFORE_D - CARD,
       (len(again), dictish(fresh(PEER, PJAR)).get('balance')))
@@ -1133,6 +1192,9 @@ if VENDOR_DOWN and VENDOR_UP:
     ops = json.loads(raw(PEER, PJAR, '/client.json') or '{}').get('ops', {})
     check('the delete op is queued naming the vendor',
           dictish(ops.get(ONONCE)).get('vendor') == VENDOR, ops)
+    code, d = curl('PUT', api(PEER) + '/vendor', {'ship': VENDOR}, jar=PJAR)
+    check('the vendor is not named again while that delete is unanswered',
+          code == 409 and 'not answered' in err_of(d), (code, d))
     # the client keeps sending it: the vendor is down, so the poke's ack
     # never comes, and only the tombstone can say the op landed
     subprocess.run(VENDOR_UP, shell=True)

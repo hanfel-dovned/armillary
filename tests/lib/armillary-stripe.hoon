@@ -145,10 +145,12 @@
     (expect-eq !>(`(unit octs)`~) !>(body.req))
   ==
 ++  test-invoice-request
-  =/  req=request:http  (invoice-request:ast base key 'in_1')
+  =/  req=request:http  (invoice-request:ast base key 'in_1' |)
+  =/  more=request:http  (invoice-request:ast base key 'in_1' &)
   ;:  weld
     (expect-eq !>(%'GET') !>(method.req))
     (expect-eq !>('http://127.0.0.1:3399/v1/invoices/in_1') !>(url.req))
+    (expect-eq !>('http://127.0.0.1:3399/v1/invoices/in_1?expand%5B%5D=payments') !>(url.more))
   ==
 ++  test-product-request
   =/  req=request:http  (product-request:ast base key 'Pro plan')
@@ -258,6 +260,7 @@
 ++  paid-invoice
   '''
   {"id":"in_1","status":"paid","customer":"cus_9","subscription":"sub_9",
+   "payment_intent":"pi_old",
    "lines":{"data":[{"price":{"id":"price_1"},"period":{"end":1792447500}}]}}
   '''
 ++  test-read-invoice
@@ -270,6 +273,7 @@
     (expect-eq !>('sub_9') !>(subscription.u.got))
     (expect-eq !>('price_1') !>(price.u.got))
     (expect-eq !>(`@ud`1.792.447.500) !>(period-end.u.got))
+    (expect-eq !>('pi_old') !>(intent.u.got))
   ==
 ::  +test-read-invoice-new-shape: the shape the 2025-03 API answers,
 ::  where the subscription and the price live under parent and
@@ -280,19 +284,44 @@
     %+  rap  3
     :~  '{"id":"in_2","object":"invoice","status":"paid","customer":"cus_9",'
         '"parent":{"type":"subscription_details","subscription_details":{"subscription":"sub_new"}},'
+        '"payments":{"object":"list","data":[{"id":"inpay_0","object":"invoice_payment",'
+        '"payment":{"type":"payment_intent","payment_intent":"pi_failed"},"status":"canceled"},'
+        '{"id":"inpay_1","object":"invoice_payment",'
+        '"payment":{"type":"payment_intent","payment_intent":"pi_new"},"status":"paid"}]},'
         '"lines":{"data":[{"id":"il_1","period":{"end":1792525000,"start":1789933000},'
         '"pricing":{"type":"price_details","price_details":{"price":"price_new","product":"prod_1"}}}]}}'
     ==
   =/  got  (read-invoice:ast body)
   ?~  got  (expect !>(|))
   ;:  weld
+    (expect-eq !>('pi_new') !>(intent.u.got))
     (expect-eq !>('sub_new') !>(subscription.u.got))
     (expect-eq !>('price_new') !>(price.u.got))
     (expect-eq !>(`@ud`1.792.525.000) !>(period-end.u.got))
   ==
+::  +test-read-charge: a charge read back for a refund made on Stripe:
+::  its payment and the cents refunded so far
+::
+++  test-read-charge
+  =/  got  (read-charge:ast '{"id":"ch_1","object":"charge","payment_intent":"pi_7","amount":1000,"amount_refunded":250}')
+  ?~  got  (expect !>(|))
+  ;:  weld
+    (expect-eq !>('ch_1') !>(id.u.got))
+    (expect-eq !>('pi_7') !>(intent.u.got))
+    (expect-eq !>(`@ud`250) !>(refunded.u.got))
+    (expect-eq !>(`@ud`1.000) !>(amount.u.got))
+    (expect-eq !>(`(unit [id=@t intent=@t refunded=@ud amount=@ud])`~) !>((read-charge:ast '{"object":"charge"}')))
+    (expect-eq !>(`(unit [id=@t intent=@t refunded=@ud amount=@ud])`~) !>((read-charge:ast 'junk')))
+  ==
+++  test-charge-request
+  =/  req=request:http  (charge-request:ast base key 'ch_1')
+  ;:  weld
+    (expect-eq !>(%'GET') !>(method.req))
+    (expect-eq !>('http://127.0.0.1:3399/v1/charges/ch_1') !>(url.req))
+  ==
 ++  a-dispute
   '''
-  {"id":"dp_1","payment_intent":"pi_7","amount":1000,"currency":"usd",
+  {"id":"dp_1","payment_intent":"pi_7","charge":"ch_7","amount":1000,"currency":"usd",
    "status":"needs_response"}
   '''
 ++  test-read-dispute
@@ -303,7 +332,8 @@
     (expect-eq !>('pi_7') !>(intent.u.got))
     (expect-eq !>(`@ud`1.000) !>(amount.u.got))
     (expect-eq !>('needs_response') !>(status.u.got))
-    (expect-eq !>(`(unit [id=@t intent=@t amount=@ud status=@t])`~) !>((read-dispute:ast 'junk')))
+    (expect-eq !>('ch_7') !>(charge.u.got))
+    (expect-eq !>(`(unit [id=@t intent=@t amount=@ud status=@t charge=@t])`~) !>((read-dispute:ast 'junk')))
   ==
 ++  test-dispute-request
   =/  req=request:http  (dispute-request:ast base key 'dp_1')
@@ -349,5 +379,16 @@
     (expect !>(!(verify-signature:ast secret (head-at when 'deadbeef') body-fixture when)))
     (expect !>(!(verify-signature:ast secret 'nonsense' body-fixture when)))
     (expect !>(!(verify-signature:ast 'other' head body-fixture when)))
+  ==
+::  while a signing secret is rolled the header carries two v1s, and the
+::  one that matches may come second
+::
+++  test-verify-signature-two-v1
+  =/  when=@ud  1.789.855.500
+  =/  both=@t  (rap 3 (head-at when 'deadbeef') ',v1=' (good-sig when) ~)
+  =/  none=@t  (rap 3 (head-at when 'deadbeef') ',v1=cafe' ~)
+  ;:  weld
+    (expect !>((verify-signature:ast secret both body-fixture when)))
+    (expect !>(!(verify-signature:ast secret none body-fixture when)))
   ==
 --

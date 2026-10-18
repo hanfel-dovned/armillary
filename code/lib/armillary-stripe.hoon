@@ -196,8 +196,7 @@
 ::  ship is in the metadata, which is what makes the payment an account.
 ::
 ::    A blank customer sends no customer at all, which is what a vendor
-::    whose Customer create failed falls back to. With one, Checkout is
-::    also allowed to write back the name it collects.
+::    whose Customer create failed falls back to.
 ::
 ++  topup-request
   |=  $:  base=@t
@@ -311,17 +310,22 @@
   ==
 ::  ==  invoices
 ::
+::    .payments asks for the invoice's payments list, which holds the
+::    PaymentIntent since the 2025-03 API. An older API refuses the
+::    expand, and answers the PaymentIntent on the invoice itself.
+::
 ++  invoice-request
-  |=  [base=@t key=@t iid=@t]
+  |=  [base=@t key=@t iid=@t payments=?]
   ^-  request:http
   =/  url=@t  (at base (rap 3 '/v1/invoices/' (url-encode iid) ~))
+  =?  url  payments  (cat 3 url '?expand%5B%5D=payments')
   [%'GET' url (auth-only key) ~]
 ::  +read-invoice: one paid invoice on a subscription. The first line is
 ::  the plan's: a subscription made here holds exactly one.
 ::
 ++  read-invoice
   |=  body=@t
-  ^-  (unit [id=@t paid=? customer=@t subscription=@t price=@t period-end=@ud])
+  ^-  (unit [id=@t paid=? customer=@t subscription=@t price=@t period-end=@ud intent=@t])
   =/  jon=json  (de-body body)
   ?.  ?=([%o *] jon)  ~
   =/  id=@t  (gs jon 'id')
@@ -339,6 +343,15 @@
   =/  price=@t
     =/  new=@t  (gs (gj (gj first 'pricing') 'price_details') 'price')
     ?:(=('' new) (gs (gj first 'price') 'id') new)
+  ::  the PaymentIntent, which a dispute or a refund names: on the
+  ::  invoice before the 2025-03 API, on its first payment since
+  =/  intent=@t
+    =/  pays=(list json)  (ga (gj jon 'payments') 'data')
+    ::  the payment that paid it: a failed attempt can be listed first
+    =/  paid=(list json)  (skim pays |=(j=json =('paid' (gs j 'status'))))
+    =?  pays  ?=(^ paid)  paid
+    =/  new=@t  ?~(pays '' (gs (gj i.pays 'payment') 'payment_intent'))
+    ?:(=('' new) (gs jon 'payment_intent') new)
   :-  ~
   :*  id
       ?|(=('paid' (gs jon 'status')) (gb jon 'paid'))
@@ -346,6 +359,7 @@
       sub
       price
       (gn (gj first 'period') 'end')
+      intent
   ==
 ::  ==  disputes
 ::
@@ -364,12 +378,30 @@
 ::
 ++  read-dispute
   |=  body=@t
-  ^-  (unit [id=@t intent=@t amount=@ud status=@t])
+  ^-  (unit [id=@t intent=@t amount=@ud status=@t charge=@t])
   =/  jon=json  (de-body body)
   ?.  ?=([%o *] jon)  ~
   =/  id=@t  (gs jon 'id')
   ?:  =('' id)  ~
-  `[id (gs jon 'payment_intent') (gn jon 'amount') (gs jon 'status')]
+  `[id (gs jon 'payment_intent') (gn jon 'amount') (gs jon 'status') (gs jon 'charge')]
+::  +charge-request: read a charge back, for a refund made on Stripe
+::
+++  charge-request
+  |=  [base=@t key=@t id=@t]
+  ^-  request:http
+  =/  url=@t  (at base (rap 3 '/v1/charges/' (url-encode id) ~))
+  [%'GET' url (auth-only key) ~]
+::  +read-charge: the charge's payment and how much of it has been
+::  refunded so far, in cents
+::
+++  read-charge
+  |=  body=@t
+  ^-  (unit [id=@t intent=@t refunded=@ud amount=@ud])
+  =/  jon=json  (de-body body)
+  ?.  ?=([%o *] jon)  ~
+  =/  id=@t  (gs jon 'id')
+  ?:  =('' id)  ~
+  `[id (gs jon 'payment_intent') (gn jon 'amount_refunded') (gn jon 'amount')]
 ::  ==  events
 ::
 ::  +event-of: the only two things a webhook body is trusted for. The
@@ -469,5 +501,20 @@
   =/  gap=@ud  ?:((gth now t.u.got) (sub now t.u.got) (sub t.u.got now))
   ?:  (gth gap 300)  |
   =/  signed=@t  (rap 3 (num t.u.got) '.' body ~)
-  (same-hex (hex-of (hmac-sha256 secret signed)) v1.u.got)
+  =/  mine=@t  (hex-of (hmac-sha256 secret signed))
+  (lien (stripe-v1s header) |=(v=@t (same-hex mine v)))
+::  +stripe-v1s: every v1 in the header. Stripe sends one per signing
+::  secret in force, two while a secret is rolled, and any one that
+::  matches is enough.
+::
+++  stripe-v1s
+  |=  h=@t
+  ^-  (list @t)
+  %+  murn  (chop ',' (trip h))
+  |=  part=tape
+  ^-  (unit @t)
+  =/  kv=(list tape)  (chop '=' part)
+  ?.  ?=([* * *] kv)  ~
+  ?.  =("v1" i.kv)  ~
+  `(crip i.t.kv)
 --
