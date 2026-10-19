@@ -190,6 +190,10 @@ That is also how an owner runs their own inference for Talon and Orrery instead 
 
 Live updates come from the instance's change beacon, streamed through grubbery's keep-SSE at `/grubbery/api/keep/apps/shell.shell/desks/armillary.desk/desk/data/armillary.armillary_app/beacon/rev`. It moves once per write that changed something, and a client that sees it move refetches what it shows. A write answers before the writer applies it, so a read right after one may still be a moment behind.
 
+### Version 39: the family's icon
+
+The icon takes the family treatment Talon and the calendar have: the sphere in amber, centred by its drawn bounds, on a rounded square of Talon's navy (#1E1B4B). The instance's tile and the published tile in `code/tile.json` are the same navy.
+
 ### Version 38: a client that does not slow with age
 
 - **Stray inputs are dropped.** grubbery offers every input a fiber's waits skipped back to its current wait at every step it takes, for as long as the fiber lives and across reloads. The client fiber skipped two kinds that no wait ever takes: the answer to each poke it sent without waiting, one per op, and every read's answer that came after the read gave up, which older versions left behind on every slow read. On ricsul, the status file read in 3 s from a request fiber took 22 s from the client fiber. The client's waits between passes and its reads now drop both, and the inbox and the tick do the same.
