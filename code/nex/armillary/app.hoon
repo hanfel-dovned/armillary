@@ -6325,7 +6325,10 @@
   =/  m  (fiber:fiber:nexus ,(unit path))
   ^-  form:m
   ;<  grant=json  bind:m  (read-json (rf up / %'grant.json'))
-  =/  root=@t  (gs:arm (gj:arm grant 'aliases') 'wallet')
+  ::  the shell keys the binding map by the alias as the ask names it,
+  ::  '@' and all: {"aliases":{"@wallet":"/apps/shell/desks/.../wallet.wallet_app"}}
+  ::  (read off a comet's grant.json, 2026-10-30; 'wallet' found nothing)
+  =/  root=@t  (gs:arm (gj:arm grant 'aliases') '@wallet')
   ?:  =('' root)  (pure:m ~)
   =/  pax=(unit path)  (rush root stap)
   ?~  pax  (pure:m ~)
