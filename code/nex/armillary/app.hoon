@@ -6356,20 +6356,24 @@
     ;<  ~  bind:m  (drop:io /relay run-road)
     (pure:m [%| 'the Wallet refused the call; are its roads granted in the shell?'])
   ::  the run's %done, by its change notices, re-read every few seconds
-  ::  in case a notice is lost; a run that never appears is given up on
-  =/  misses=@ud  0
+  ::  in case a notice is lost. Two minutes is the most any of it waits,
+  ::  whether the run never appears or sits there unfinished: a tool
+  ::  that crashes leaves its run grub banged at its last step, never
+  ::  %done, and waiting on that alone held GET /api/wallet open for
+  ::  ever on a comet whose Wallet died on a peek (2026-10-30).
+  ;<  start=@da  bind:m  get-time:io
   ;<  res=(unit json)  bind:m
     =/  mr  (fiber:fiber:nexus ,(unit json))
     |-  ^-  form:mr
+    ;<  now=@da  bind:mr  get-time:io
+    ?:  (gth now (add start ~m2))  (pure:mr ~)
     ;<  *  bind:mr
       %^  (with-timeout:io ,wave:nexus)  /relay-poll  ~s5
       (take-news:io /relay)
     ;<  v=view:nexus  bind:mr  (peek:io run-road ~)
-    ?.  ?=([%file *] v)
-      ?:  (gte misses 24)  (pure:mr ~)
-      $(misses +(misses))
+    ?.  ?=([%file *] v)  $
     =/  got  (mule |.(!<(tool-state:arm (need-vase:tarball sang.v))))
-    ?:  ?=(%| -.got)  $(misses +(misses))
+    ?:  ?=(%| -.got)  $
     ?.  =(%done step.p.got)  $
     (pure:mr update.p.got)
   ;<  ~  bind:m  (drop:io /relay run-road)
